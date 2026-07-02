@@ -12,8 +12,11 @@ import {
   ShieldAlert,
   Fingerprint,
   Clock,
+  Filter,
 } from "lucide-react";
-import { useUploadFile, useFilesList, useStats } from "@/hooks/useCaseData";
+import { useUploadFile, useFilesList, useStats, useAnalysisStatus } from "@/hooks/useCaseData";
+import { useFileSelection } from "@/hooks/useFileSelection";
+import { useQueryClient } from "@tanstack/react-query";
 
 export const Route = createFileRoute("/upload")({
   head: () => ({ meta: [{ title: "Import — ForensiQ" }] }),
@@ -41,10 +44,25 @@ function UploadPage() {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
-
   const upload = useUploadFile();
   const { data: files, isLoading: filesLoading } = useFilesList();
+  const { setFileFilter } = useFileSelection();
   const { data: stats } = useStats();
+  const { data: statusData } = useAnalysisStatus();
+  const queryClient = useQueryClient();
+
+  // Dès que l'analyse se termine (processing → false), forcer le rechargement
+  // de toutes les données pour afficher les résultats immédiatement
+  const wasProcessing = useRef(false);
+  useEffect(() => {
+    if (statusData?.processing) {
+      wasProcessing.current = true;
+    } else if (wasProcessing.current && !statusData?.processing) {
+      wasProcessing.current = false;
+      // Invalide tout pour forcer un rechargement immédiat
+      queryClient.invalidateQueries();
+    }
+  }, [statusData?.processing, queryClient]);
 
   // Simulation de l'étape du pipeline en cours d'exécution
   const [currentStep, setCurrentStep] = useState(-1);
@@ -304,11 +322,23 @@ function UploadPage() {
                         : "text-muted-foreground"
                 }`}
               >
-                {f.status === "parsed" && <CheckCircle2 className="h-3 w-3" />}
-                {f.status === "processing" && <Loader2 className="h-3 w-3 animate-spin" />}
                 {f.status === "error" && <XCircle className="h-3 w-3" />}
                 {f.status ?? "—"}
               </span>
+              
+              {/* Bouton de filtrage */}
+              {f.status === "parsed" && (
+                <button
+                  onClick={() => {
+                    setFileFilter(f.id, f.filename);
+                    navigate({ to: "/" });
+                  }}
+                  className="ml-4 h-8 w-8 grid place-items-center rounded-md border border-border hover:bg-primary/10 hover:text-primary transition-colors"
+                  title="Voir uniquement les résultats de ce fichier"
+                >
+                  <Filter className="h-4 w-4" />
+                </button>
+              )}
             </div>
           ))}
         </div>

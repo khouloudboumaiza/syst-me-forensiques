@@ -1,254 +1,288 @@
 // src/hooks/useCaseData.ts
 //
-// Centralise les appels API du dashboard et gère le rafraîchissement
-// automatique après un upload, sans reload manuel de la page.
+// Centralise les appels API du dashboard.
+// ─ Polling adaptatif : rapide (1.5 s) juste après un upload, lent (8 s) au repos.
+// ─ Les hooks dérivés (IOCs, Timeline, Artefacts) partagent le MÊME cache
+//   d'alertes via `select` — un seul vrai appel réseau pour tous.
+// ─ useAnalysisStatus surveille /status (très léger) pendant le traitement.
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { API_URL } from "@/lib/api";
+import { useFileSelection } from "./useFileSelection";
 
-const CASE_ID = "demo"; // remplacez par votre case_id dynamique si multi-dossiers
+const CASE_ID = "demo";
 
-// Intervalle de polling pendant qu'une analyse est en cours (2 s),
-// sinon on revient à 10 s pour ne pas surcharger le backend.
-const POLL_INTERVAL_ACTIVE = 2000;
-const POLL_INTERVAL_IDLE = 10000;
+// Durée pendant laquelle on garde les données en cache avant re-fetch
+const STALE_TIME   = 4_000;   // 4 s  – données considérées « fraîches »
+const IDLE_POLL    = 8_000;   // 8 s  – intervalle de polling au repos
+const ACTIVE_POLL  = 1_500;   // 1.5 s – intervalle juste après un upload
 
-// --- Lecture des données (se rafraîchissent automatiquement) ---
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers de transformation (pur JS, pas d'appel réseau)
+// ─────────────────────────────────────────────────────────────────────────────
+function buildIOCsFromAlerts(alerts: any[], filesMap?: Record<number, string>): any[] {
+  if (!Array.isArray(alerts)) return [];
+  const iocMap = new Map<string, any>();
+
+  for (const a of alerts) {
+    const addIoc = (value: string, type: string, extra: object = {}) => {
+      if (!value || value.length < 4) return;
+      const key = `${type}:${value}`;
+      if (!iocMap.has(key)) {
+        iocMap.set(key, {
+          value,
+          type,
+          source: a.tool ?? "unknown",
+          file_id: a.file_id,
+          filename: filesMap?.[a.file_id] || "Inconnu",
+          hits: 0,
+          firstSeen: a.timestamp ?? "—",
+          severity: a.severity ?? "info",
+          ...extra,
+        });
+      }
+      iocMap.get(key)!.hits += 1;
+    };
+
+    addIoc(a.dst_ip, "IP");
+    addIoc(a.src_ip, "IP");
+
+    if (a.tool === "loki" && a.target) addIoc(a.target, "File");
+
+    if (a.threat_intel) {
+      const ti = typeof a.threat_intel === "string" ? JSON.parse(a.threat_intel) : a.threat_intel;
+      for (const h of ti?.hashes ?? []) addIoc(h, "Hash");
+    }
+
+    // Extraction magique (Regex) depuis le texte des alertes
+    const textToSearch = `${a.title} ${a.details} ${a.target}`.toLowerCase();
+    
+    // Extraction des IPs
+    const ips = textToSearch.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g);
+    if (ips) ips.forEach(ip => addIoc(ip, "IP"));
+
+    // Extraction des Hashes (MD5, SHA1, SHA256)
+    const hashes = textToSearch.match(/\b[a-f0-9]{32,64}\b/g);
+    if (hashes) hashes.forEach(hash => addIoc(hash, "Hash"));
+
+    // Extraction des noms de fichiers suspects
+    const files = textToSearch.match(/\b[a-z0-9_.-]+\.(exe|dll|ps1|bat|sh|bin|vbs)\b/g);
+    if (files) files.forEach(f => addIoc(f, "File"));
+  }
+
+  return Array.from(iocMap.values());
+}
+
+function buildTimelineFromAlerts(alerts: any[]): any[] {
+  if (!Array.isArray(alerts)) return [];
+  return [...alerts]
+    .filter((a) => a.timestamp)
+    .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
+    .map((a) => ({
+      time:          String(a.timestamp ?? "").slice(11, 19) || "—",
+      fullTimestamp: a.timestamp,
+      source:        a.tool ?? "unknown",
+      severity:      (a.severity ?? "info").toLowerCase(),
+      title:         a.title ?? a.rule ?? "Événement",
+      detail:        a.details ?? a.description ?? "",
+      target:        a.target ?? a.dst_ip ?? "",
+    }));
+}
+
+function buildArtifactsFromAlerts(alerts: any[]): any[] {
+  if (!Array.isArray(alerts)) return [];
+  const seen = new Set<string>();
+  const result: any[] = [];
+
+  for (const a of alerts) {
+    const path = a.file_path ?? a.target ?? "";
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+
+    const parts = path.replace(/\\/g, "/").split("/");
+    const name  = parts[parts.length - 1] || path;
+    const dir   = parts.slice(0, -1).join("/") || "/";
+
+    const sev = (a.severity ?? "").toLowerCase();
+    result.push({
+      name,
+      path:      dir,
+      hash:      a.mitre_attack ? `MITRE: ${a.mitre_attack}` : "—",
+      source:    a.tool ?? "unknown",
+      tag:       sev === "critical" ? "malware" : sev === "high" ? "suspicious" : "log",
+      severity:  a.severity ?? "info",
+      timestamp: a.timestamp ?? "—",
+    });
+  }
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// État partagé : timestamp du dernier upload (pour le polling adaptatif)
+// ─────────────────────────────────────────────────────────────────────────────
+let _lastUploadAt = 0;
+const ACTIVE_WINDOW_MS = 30_000; // polling rapide pendant 30 s après upload
+
+function getRefetchInterval() {
+  const sinceUpload = Date.now() - _lastUploadAt;
+  return sinceUpload < ACTIVE_WINDOW_MS ? ACTIVE_POLL : IDLE_POLL;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hooks de lecture — données primaires
+// ─────────────────────────────────────────────────────────────────────────────
 export function useStats() {
+  const { selectedFileId } = useFileSelection();
   return useQuery({
-    queryKey: ["stats", CASE_ID],
-    queryFn: () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/stats`).then((r) => r.json()),
-    refetchInterval: POLL_INTERVAL_ACTIVE,
+    queryKey:       ["stats", CASE_ID, selectedFileId],
+    queryFn:        () => fetch(`${API_URL}/cases/${CASE_ID}/stats${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    staleTime:      STALE_TIME,
+    refetchInterval: getRefetchInterval,
   });
 }
 
+/** Requête principale : partagée avec les hooks dérivés via `select`. */
 export function useAlerts() {
+  const { selectedFileId } = useFileSelection();
   return useQuery({
-    queryKey: ["alerts", CASE_ID],
-    queryFn: () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/alerts`).then((r) => r.json()),
-    refetchInterval: POLL_INTERVAL_ACTIVE,
+    queryKey:        ["alerts", CASE_ID, selectedFileId],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    staleTime:       STALE_TIME,
+    refetchInterval: getRefetchInterval,
   });
 }
 
 export function useSeverityDistribution() {
+  const { selectedFileId } = useFileSelection();
   return useQuery({
-    queryKey: ["severity-distribution", CASE_ID],
-    queryFn: () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/severity-distribution`).then((r) =>
-        r.json()
-      ),
-    refetchInterval: POLL_INTERVAL_ACTIVE,
+    queryKey:        ["severity-distribution", CASE_ID, selectedFileId],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/severity-distribution${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    staleTime:       STALE_TIME,
+    refetchInterval: getRefetchInterval,
   });
 }
 
 export function useToolDistribution() {
+  const { selectedFileId } = useFileSelection();
   return useQuery({
-    queryKey: ["tool-distribution", CASE_ID],
-    queryFn: () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/tool-distribution`).then((r) =>
-        r.json()
-      ),
-    refetchInterval: POLL_INTERVAL_ACTIVE,
+    queryKey:        ["tool-distribution", CASE_ID, selectedFileId],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/tool-distribution${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    staleTime:       STALE_TIME,
+    refetchInterval: getRefetchInterval,
   });
 }
 
 export function useFilesList() {
   return useQuery({
-    queryKey: ["files", CASE_ID],
-    queryFn: () =>
+    queryKey:        ["files", CASE_ID],
+    queryFn:         () =>
       fetch(`${API_URL}/cases/${CASE_ID}/files`).then((r) => r.json()),
-    refetchInterval: POLL_INTERVAL_ACTIVE,
-  });
-}
-
-export function useNetworkAlerts() {
-  return useQuery({
-    queryKey: ["network-alerts", CASE_ID],
-    queryFn: () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/network-alerts`).then((r) => r.json()),
-    refetchInterval: POLL_INTERVAL_IDLE,
+    staleTime:       STALE_TIME,
+    refetchInterval: getRefetchInterval,
   });
 }
 
 export function useCorrelations() {
+  const { selectedFileId } = useFileSelection();
   return useQuery({
-    queryKey: ["correlations", CASE_ID],
-    queryFn: () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/correlations`).then((r) => r.json()),
-    refetchInterval: POLL_INTERVAL_ACTIVE,
+    queryKey:        ["correlations", CASE_ID, selectedFileId],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/correlations${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    staleTime:       STALE_TIME,
+    refetchInterval: getRefetchInterval,
   });
 }
 
-// --- IOCs dérivés des alertes avec threat_intel ---
-export function useIOCs() {
-  return useQuery({
-    queryKey: ["iocs", CASE_ID],
-    queryFn: async () => {
-      const alerts = await fetch(
-        `${API_URL}/cases/${CASE_ID}/alerts`
-      ).then((r) => r.json());
-      if (!Array.isArray(alerts)) return [];
-
-      // Construit une liste d'IOCs à partir des alertes enrichies
-      const iocMap = new Map<string, any>();
-
-      for (const a of alerts) {
-        // IOCs de type IP
-        const ips = [a.dst_ip, a.src_ip].filter(Boolean);
-        for (const ip of ips) {
-          if (!iocMap.has(ip)) {
-            iocMap.set(ip, {
-              value: ip,
-              type: "IP",
-              source: a.tool ?? "unknown",
-              hits: 0,
-              firstSeen: a.timestamp ?? "—",
-              severity: a.severity ?? "info",
-              threat_intel: a.threat_intel,
-            });
-          }
-          iocMap.get(ip)!.hits += 1;
-        }
-
-        // IOCs de type File (cibles Loki)
-        if (a.tool === "loki" && a.target) {
-          const key = `file:${a.target}`;
-          if (!iocMap.has(key)) {
-            iocMap.set(key, {
-              value: a.target,
-              type: "File",
-              source: a.tool,
-              hits: 0,
-              firstSeen: a.timestamp ?? "—",
-              severity: a.severity ?? "info",
-              threat_intel: a.threat_intel,
-            });
-          }
-          iocMap.get(key)!.hits += 1;
-        }
-
-        // IOCs de type Hash depuis threat_intel
-        if (a.threat_intel) {
-          const ti =
-            typeof a.threat_intel === "string"
-              ? JSON.parse(a.threat_intel)
-              : a.threat_intel;
-          const hashes = ti?.hashes ?? [];
-          for (const h of hashes) {
-            if (!iocMap.has(h)) {
-              iocMap.set(h, {
-                value: h,
-                type: "Hash",
-                source: a.tool ?? "unknown",
-                hits: 1,
-                firstSeen: a.timestamp ?? "—",
-                severity: a.severity ?? "info",
-                threat_intel: a.threat_intel,
-              });
-            }
-          }
-        }
-      }
-
-      return Array.from(iocMap.values());
-    },
-    refetchInterval: POLL_INTERVAL_ACTIVE,
-  });
-}
-
-// --- Timeline construite depuis les alertes triées par timestamp ---
-export function useTimeline() {
-  return useQuery({
-    queryKey: ["timeline", CASE_ID],
-    queryFn: async () => {
-      const alerts = await fetch(
-        `${API_URL}/cases/${CASE_ID}/alerts`
-      ).then((r) => r.json());
-      if (!Array.isArray(alerts)) return [];
-
-      return [...alerts]
-        .filter((a) => a.timestamp)
-        .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
-        .map((a) => ({
-          time: String(a.timestamp ?? "").slice(11, 19) || "—",
-          fullTimestamp: a.timestamp,
-          source: a.tool ?? "unknown",
-          severity: (a.severity ?? "info").toLowerCase(),
-          title: a.title ?? a.rule ?? "Événement",
-          detail: a.details ?? a.description ?? "",
-          target: a.target ?? a.dst_ip ?? "",
-        }));
-    },
-    refetchInterval: POLL_INTERVAL_ACTIVE,
-  });
-}
-
-// --- Artefacts construits depuis les alertes (fichiers/binaires suspects) ---
-export function useArtifacts() {
-  return useQuery({
-    queryKey: ["artifacts", CASE_ID],
-    queryFn: async () => {
-      const alerts = await fetch(
-        `${API_URL}/cases/${CASE_ID}/alerts`
-      ).then((r) => r.json());
-      if (!Array.isArray(alerts)) return [];
-
-      // On filtre les alertes ayant un chemin de fichier ou une cible fichier
-      const seen = new Set<string>();
-      const result: any[] = [];
-
-      for (const a of alerts) {
-        const path = a.file_path ?? a.target ?? "";
-        if (!path || seen.has(path)) continue;
-        seen.add(path);
-
-        const parts = path.replace(/\\/g, "/").split("/");
-        const name = parts[parts.length - 1] || path;
-        const dir = parts.slice(0, -1).join("/") || "/";
-
-        result.push({
-          name,
-          path: dir,
-          hash: a.mitre_attack ? `MITRE: ${a.mitre_attack}` : "—",
-          source: a.tool ?? "unknown",
-          tag: tagFromSeverity(a.severity),
-          severity: a.severity ?? "info",
-          timestamp: a.timestamp ?? "—",
-        });
-      }
-
-      return result;
-    },
-    refetchInterval: POLL_INTERVAL_ACTIVE,
-  });
-}
-
-function tagFromSeverity(severity: string) {
-  switch ((severity ?? "").toLowerCase()) {
-    case "critical":
-      return "malware";
-    case "high":
-      return "suspicious";
-    case "medium":
-      return "suspicious";
-    default:
-      return "log";
-  }
-}
-
-// --- Rapport complet depuis le backend ---
 export function useReport() {
+  const { selectedFileId } = useFileSelection();
   return useQuery({
-    queryKey: ["report", CASE_ID],
-    queryFn: () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/report`).then((r) => r.json()),
-    refetchInterval: POLL_INTERVAL_IDLE,
+    queryKey:        ["report", CASE_ID, selectedFileId],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/report${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    staleTime:       10_000,
+    refetchInterval: IDLE_POLL,
   });
 }
 
-// --- Upload : dès que ça réussit, on force le refetch de TOUT le dashboard ---
+// ─────────────────────────────────────────────────────────────────────────────
+// Hooks dérivés — partagent le cache d'alertes via `select` (0 appel réseau sup.)
+// ─────────────────────────────────────────────────────────────────────────────
+export function useIOCs() {
+  const { selectedFileId } = useFileSelection();
+  return useQuery({
+    queryKey:        ["alerts", CASE_ID, selectedFileId],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    select:          buildIOCsFromAlerts,
+    staleTime:       STALE_TIME,
+    refetchInterval: getRefetchInterval,
+  });
+}
+
+export function useTimeline() {
+  const { selectedFileId } = useFileSelection();
+  return useQuery({
+    queryKey:        ["alerts", CASE_ID, selectedFileId],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    select:          buildTimelineFromAlerts,
+    staleTime:       STALE_TIME,
+    refetchInterval: getRefetchInterval,
+  });
+}
+
+export function useArtifacts() {
+  const { selectedFileId } = useFileSelection();
+  return useQuery({
+    queryKey:        ["alerts", CASE_ID, selectedFileId],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    select:          buildArtifactsFromAlerts,
+    staleTime:       STALE_TIME,
+    refetchInterval: getRefetchInterval,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Statut backend
+// ─────────────────────────────────────────────────────────────────────────────
+export function useBackendStatus() {
+  return useQuery({
+    queryKey:        ["backend-status"],
+    queryFn:         () =>
+      fetch(`${API_URL}/`).then((r) => {
+        if (!r.ok) throw new Error("Backend down");
+        return r.json();
+      }),
+    staleTime:       4_000,
+    refetchInterval: 6_000,
+    retry:           1,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Statut d'analyse — endpoint ultra-léger (polling agressif pendant traitement)
+// ─────────────────────────────────────────────────────────────────────────────
+export function useAnalysisStatus() {
+  return useQuery({
+    queryKey:        ["status", CASE_ID],
+    queryFn:         () =>
+      fetch(`${API_URL}/cases/${CASE_ID}/status`).then((r) => r.json()),
+    staleTime:       500,
+    refetchInterval: (data: any) => {
+      // Si traitement en cours : poll toutes les 1.5 s, sinon 8 s
+      return data?.processing ? 1_500 : 8_000;
+    },
+    retry: 1,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Upload : invalide tout le cache et passe en mode polling rapide 30 s
+// ─────────────────────────────────────────────────────────────────────────────
 export function useUploadFile() {
   const queryClient = useQueryClient();
 
@@ -258,42 +292,27 @@ export function useUploadFile() {
       formData.append("file", file);
       const res = await fetch(`${API_URL}/cases/${CASE_ID}/upload`, {
         method: "POST",
-        body: formData,
+        body:   formData,
       });
       if (!res.ok) throw new Error("Échec de l'upload");
       return res.json();
     },
-    onSuccess: () => {
-      // Invalide toutes les queries pour forcer un rechargement complet
-      queryClient.invalidateQueries({ queryKey: ["stats", CASE_ID] });
-      queryClient.invalidateQueries({ queryKey: ["alerts", CASE_ID] });
-      queryClient.invalidateQueries({ queryKey: ["network-alerts", CASE_ID] });
-      queryClient.invalidateQueries({ queryKey: ["correlations", CASE_ID] });
-      queryClient.invalidateQueries({ queryKey: ["iocs", CASE_ID] });
-      queryClient.invalidateQueries({ queryKey: ["timeline", CASE_ID] });
-      queryClient.invalidateQueries({ queryKey: ["artifacts", CASE_ID] });
-      queryClient.invalidateQueries({ queryKey: ["files", CASE_ID] });
-      queryClient.invalidateQueries({ queryKey: ["report", CASE_ID] });
-      queryClient.invalidateQueries({
-        queryKey: ["severity-distribution", CASE_ID],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["tool-distribution", CASE_ID],
-      });
+    onMutate: () => {
+      // Dès que l'upload commence → mode polling rapide
+      _lastUploadAt = Date.now();
     },
-  });
-}
+    onSuccess: () => {
+      // Marquer l'instant de fin d'upload (reset la fenêtre de 30 s)
+      _lastUploadAt = Date.now();
 
-// --- Hook utilitaire : est-ce que le backend est joignable ? ---
-export function useBackendStatus() {
-  return useQuery({
-    queryKey: ["backend-status"],
-    queryFn: () =>
-      fetch(`${API_URL}/`).then((r) => {
-        if (!r.ok) throw new Error("Backend down");
-        return r.json();
-      }),
-    refetchInterval: 5000,
-    retry: 1,
+      // Invalider immédiatement toutes les queries pour forcer un rechargement
+      queryClient.invalidateQueries({ queryKey: ["stats",                CASE_ID] });
+      queryClient.invalidateQueries({ queryKey: ["alerts",               CASE_ID] });
+      queryClient.invalidateQueries({ queryKey: ["correlations",         CASE_ID] });
+      queryClient.invalidateQueries({ queryKey: ["files",                CASE_ID] });
+      queryClient.invalidateQueries({ queryKey: ["report",               CASE_ID] });
+      queryClient.invalidateQueries({ queryKey: ["severity-distribution", CASE_ID] });
+      queryClient.invalidateQueries({ queryKey: ["tool-distribution",    CASE_ID] });
+    },
   });
 }

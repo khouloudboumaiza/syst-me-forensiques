@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AppShell, Card, ToolBadge } from "@/components/app-shell";
 import { Copy, Fingerprint, Loader2, AlertTriangle } from "lucide-react";
-import { useIOCs } from "@/hooks/useCaseData";
-import { useState } from "react";
+import { useIOCs, useFilesList } from "@/hooks/useCaseData";
+import { useState, useMemo } from "react";
 
 export const Route = createFileRoute("/iocs")({
   head: () => ({ meta: [{ title: "IOCs — ForensiQ" }] }),
@@ -14,11 +14,24 @@ type IocType = (typeof IOC_TYPES)[number];
 
 function IocsPage() {
   const { data: iocs, isLoading, isError } = useIOCs();
+  const { data: files } = useFilesList();
   const [copied, setCopied] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
 
   const iocList = Array.isArray(iocs) ? iocs : [];
-  const filtered = filter === "all" ? iocList : iocList.filter((i) => i.type === filter);
+  
+  // Associe chaque IOC à son nom de fichier
+  const enrichedIocs = useMemo(() => {
+    const filesArray = Array.isArray(files) ? files : [];
+    const filesMap = filesArray.reduce((acc: any, f: any) => ({ ...acc, [f.id]: f.filename }), {});
+    
+    return iocList.map(ioc => ({
+      ...ioc,
+      filename: ioc.file_id ? (filesMap[ioc.file_id] || "Inconnu") : "Inconnu"
+    }));
+  }, [iocList, files]);
+
+  const filtered = filter === "all" ? enrichedIocs : enrichedIocs.filter((i) => i.type === filter);
 
   const handleCopy = (value: string) => {
     navigator.clipboard.writeText(value);
@@ -93,7 +106,8 @@ function IocsPage() {
                 <tr>
                   <th className="text-left px-4 py-3">Type</th>
                   <th className="text-left px-4 py-3">Valeur</th>
-                  <th className="text-left px-4 py-3">Source</th>
+                  <th className="text-left px-4 py-3">Outil</th>
+                  <th className="text-left px-4 py-3">Fichier analysé</th>
                   <th className="text-left px-4 py-3">Occurrences</th>
                   <th className="text-left px-4 py-3">Vu pour la 1ère fois</th>
                   <th className="px-4 py-3"></th>
@@ -110,6 +124,9 @@ function IocsPage() {
                     <td className="px-4 py-3 font-mono text-xs max-w-xs truncate">{i.value}</td>
                     <td className="px-4 py-3">
                       <ToolBadge tool={i.source} />
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs truncate" title={i.filename}>
+                      {i.filename}
                     </td>
                     <td className="px-4 py-3 tabular-nums">{i.hits}</td>
                     <td className="px-4 py-3 font-mono text-xs text-muted-foreground">

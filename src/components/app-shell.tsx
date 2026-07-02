@@ -15,8 +15,11 @@ import {
   Wifi,
   WifiOff,
   Activity,
+  FilterX,
+  FileCheck
 } from "lucide-react";
-import { useBackendStatus, useFilesList } from "@/hooks/useCaseData";
+import { useBackendStatus, useAnalysisStatus } from "@/hooks/useCaseData";
+import { useFileSelection } from "@/hooks/useFileSelection";
 
 const nav = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
@@ -33,11 +36,11 @@ export function AppShell({ children, title, subtitle }: { children: ReactNode; t
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
   const { data: backendData, isError: backendDown } = useBackendStatus();
-  const { data: files } = useFilesList();
+  const { data: statusData } = useAnalysisStatus();
+  const { selectedFileId, selectedFileName, clearFileFilter } = useFileSelection();
 
   // Vrai si au moins un fichier est en cours d'analyse
-  const filesArray = Array.isArray(files) ? files : [];
-  const analysisInProgress = filesArray.some((f: any) => f.status === "processing");
+  const analysisInProgress = statusData?.processing === true;
 
   const backendOnline = !backendDown && backendData;
 
@@ -140,6 +143,23 @@ export function AppShell({ children, title, subtitle }: { children: ReactNode; t
               <code className="font-mono text-xs">uvicorn main:app --reload --port 8000</code> dans le dossier{" "}
               <code className="font-mono text-xs">backend/</code>
             </span>
+          </div>
+        )}
+
+        {/* Bandeau Filtre Fichier Actif */}
+        {selectedFileId && (
+          <div className="bg-primary/10 border-b border-primary/30 px-6 py-2 flex items-center gap-3">
+            <FileCheck className="h-4 w-4 text-primary shrink-0" />
+            <span className="text-sm text-primary font-medium">
+              Mode Filtré : Vous visualisez uniquement les résultats du fichier <strong className="font-mono">{selectedFileName}</strong>.
+            </span>
+            <button
+              onClick={clearFileFilter}
+              className="ml-auto flex items-center gap-1.5 px-3 py-1 bg-background border border-primary/20 text-primary hover:bg-primary hover:text-primary-foreground text-xs font-semibold rounded transition-colors"
+            >
+              <FilterX className="h-3.5 w-3.5" />
+              Voir tout le dossier
+            </button>
           </div>
         )}
 
