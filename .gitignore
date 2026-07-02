@@ -1,0 +1,21 @@
+﻿# Python
+backend/venv/
+**/__pycache__/
+*.pyc
+
+# Base de données
+backend/forensiq.db
+*.db
+
+# Modèles ML
+backend/model/*.pkl
+
+# Datasets (trop volumineux)
+ml-training/datasets/
+backend/uploads/
+
+# Node / build
+node_modules/
+dist/
+.vite/
+tsconfig.tsbuildinfo
