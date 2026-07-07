@@ -2,7 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { AppShell, Card, ToolBadge } from "@/components/app-shell";
 import { Copy, Fingerprint, Loader2, AlertTriangle } from "lucide-react";
 import { useIOCs, useFilesList } from "@/hooks/useCaseData";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { API_URL } from "@/lib/api";
 
 export const Route = createFileRoute("/iocs")({
   head: () => ({ meta: [{ title: "IOCs — ForensiQ" }] }),
@@ -11,6 +13,42 @@ export const Route = createFileRoute("/iocs")({
 
 const IOC_TYPES = ["IP", "Hash", "Domain", "File", "Registry"] as const;
 type IocType = (typeof IOC_TYPES)[number];
+
+function VirusTotalCell({ ioc }: { ioc: any }) {
+  const isHash = ioc.type === "Hash" || ioc.type === "IP";
+  
+  // Si le score est déjà là (via threat_intel du backend), on l'utilise
+  if (ioc.vtScore && ioc.vtScore !== "—") {
+    return (
+      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${ioc.vtVerdict === "malicious" ? "bg-destructive/15 text-destructive border-destructive/30" : ioc.vtVerdict === "clean" ? "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30" : "bg-[color:var(--medium)]/15 text-[color:var(--medium)] border-[color:var(--medium)]/30"}`}>
+        {ioc.vtScore}
+      </span>
+    );
+  }
+
+  // Sinon, on tente de le récupérer dynamiquement depuis le backend
+  const { data, isLoading } = useQuery({
+    queryKey: ["vt", ioc.type, ioc.value],
+    queryFn: () => fetch(`${API_URL}/vt/hash/${ioc.value}`).then((r) => r.json()),
+    enabled: isHash && !ioc.vtScore, // Ne s'active que pour les Hashs/IPs sans score
+    staleTime: Infinity, // On garde en cache pour ne pas spammer l'API
+  });
+
+  if (!isHash) return <span className="text-xs text-muted-foreground">—</span>;
+  if (isLoading) return <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />;
+
+  if (data && data.found) {
+    const total = (data.malicious || 0) + (data.suspicious || 0) + (data.harmless || 0);
+    const scoreStr = `${data.malicious}/${total}`;
+    return (
+      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${data.verdict === "malicious" ? "bg-destructive/15 text-destructive border-destructive/30" : data.verdict === "clean" ? "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30" : "bg-[color:var(--medium)]/15 text-[color:var(--medium)] border-[color:var(--medium)]/30"}`}>
+        {scoreStr}
+      </span>
+    );
+  }
+
+  return <span className="text-[10px] text-muted-foreground">0/0</span>;
+}
 
 function IocsPage() {
   const { data: iocs, isLoading, isError } = useIOCs();
@@ -108,6 +146,7 @@ function IocsPage() {
                   <th className="text-left px-4 py-3">Valeur</th>
                   <th className="text-left px-4 py-3">Outil</th>
                   <th className="text-left px-4 py-3">Fichier analysé</th>
+                  <th className="text-left px-4 py-3">VirusTotal</th>
                   <th className="text-left px-4 py-3">Occurrences</th>
                   <th className="text-left px-4 py-3">Vu pour la 1ère fois</th>
                   <th className="px-4 py-3"></th>
@@ -127,6 +166,9 @@ function IocsPage() {
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs truncate" title={i.filename}>
                       {i.filename}
+                    </td>
+                    <td className="px-4 py-3">
+                      <VirusTotalCell ioc={i} />
                     </td>
                     <td className="px-4 py-3 tabular-nums">{i.hits}</td>
                     <td className="px-4 py-3 font-mono text-xs text-muted-foreground">

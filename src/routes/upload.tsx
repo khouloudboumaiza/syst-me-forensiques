@@ -83,15 +83,21 @@ function UploadPage() {
     }
   }, [upload.isPending, upload.isSuccess]);
 
-  const handleFile = (file: File) => {
-    upload.mutate(file);
+  const handleFiles = (fileList: FileList | File[]) => {
+    const arr = Array.from(fileList);
+    if (arr.length === 0) return;
+    if (arr.length === 1) {
+      upload.mutate(arr[0]);
+    } else {
+      upload.mutate(arr);
+    }
   };
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleFile(file);
+    const droppedFiles = e.dataTransfer.files;
+    if (droppedFiles && droppedFiles.length > 0) handleFiles(droppedFiles);
   };
 
   const filesArray = Array.isArray(files) ? files : [];
@@ -161,19 +167,23 @@ function UploadPage() {
 
             <p className="text-sm text-muted-foreground mt-2 max-w-md">
               {upload.isPending
-                ? "Le fichier est en cours de traitement par le backend. Le dashboard se mettra à jour automatiquement."
+                ? "Les fichiers sont en cours de traitement par le backend. Le dashboard se mettra à jour automatiquement."
                 : upload.isSuccess
-                  ? `Outil détecté : ${upload.data?.tool_detected ?? "—"} — ${upload.data?.alerts_extracted ?? 0} alertes extraites`
+                  ? upload.data?.count
+                    ? `${upload.data.count} fichier(s) envoyé(s) en analyse.`
+                    : `Outil détecté : ${upload.data?.tool_detected ?? "—"} — ${upload.data?.alerts_extracted ?? 0} alertes extraites`
                   : upload.isError
                     ? "Échec de l'analyse. Vérifiez que le backend tourne sur localhost:8000."
-                    : "Formats supportés : CSV (Hayabusa, flux réseau), logs (Loki). Détection automatique de l'outil source."}
+                    : "Formats supportés : CSV, JSON, logs. Sélectionnez ou glissez un ou plusieurs fichiers à la fois."}
             </p>
 
             <input
               ref={fileInputRef}
               type="file"
+              multiple
+              accept=".json,.txt,.csv,.xlsx"
               className="hidden"
-              onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+              onChange={(e) => e.target.files && e.target.files.length > 0 && handleFiles(e.target.files)}
             />
 
             {!upload.isPending && (
@@ -182,7 +192,7 @@ function UploadPage() {
                 disabled={upload.isPending}
                 className="mt-5 inline-flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
-                {upload.isSuccess ? "Analyser un autre fichier" : "Parcourir les fichiers"}
+                {upload.isSuccess ? "Analyser d'autres fichiers" : "Parcourir les fichiers"}
               </button>
             )}
 
@@ -198,7 +208,7 @@ function UploadPage() {
 
             <div className="mt-6 flex items-center gap-2 flex-wrap justify-center">
               <span className="text-xs text-muted-foreground">Compatible :</span>
-              {(["Loki", "Hayabusa", "ML-Network"] as const).map((t) => (
+              {(["Loki", "Hayabusa", "Kuiper", "ML-Network"] as const).map((t) => (
                 <ToolBadge key={t} tool={t} />
               ))}
             </div>

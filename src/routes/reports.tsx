@@ -49,6 +49,29 @@ function threatLevel(alerts: any[]): { label: string; color: string } {
   return { label: "FAIBLE", color: "#22c55e" };
 }
 
+function generateExplanation(rule: string, target: string, source: string) {
+  const r = (rule || "").toLowerCase();
+  if (r.includes("logon") || r.includes("login") || r.includes("connexion")) {
+    return `Tentative de connexion identifiée sur la machine / l'IP ${target || "cible"}.`;
+  }
+  if (r.includes("process") || r.includes("execution") || r.includes("cmd") || r.includes("shell")) {
+    return `Exécution d'une commande ou d'un processus potentiellement malveillant (${target}).`;
+  }
+  if (r.includes("malware") || r.includes("virus") || r.includes("trojan") || r.includes("backdoor")) {
+    return `Un logiciel malveillant potentiel a été détecté dans ${target || "le système"}.`;
+  }
+  if (r.includes("network") || r.includes("connection") || r.includes("traffic") || r.includes("port")) {
+    return `Trafic réseau anormal impliquant l'adresse ${target}.`;
+  }
+  if (r.includes("privilege") || r.includes("admin") || r.includes("credential")) {
+    return `Activité liée à des droits d'administration ou un vol d'identifiants.`;
+  }
+  if (r.includes("file") || r.includes("registry")) {
+    return `Modification suspecte d'un fichier ou du registre (${target}).`;
+  }
+  return `L'outil ${source} a signalé ce comportement comme suspect.`;
+}
+
 // ─── Composants internes ───────────────────────────────────────────────────────
 function Section({ title, icon: Icon, children }: {
   title: string; icon: React.ElementType; children: React.ReactNode;
@@ -384,8 +407,8 @@ function ReportsPage() {
                     <th className="text-left px-4 py-3 w-8">#</th>
                     <th className="text-left px-4 py-3">Sévérité</th>
                     <th className="text-left px-4 py-3">Source</th>
-                    <th className="text-left px-4 py-3">Règle / Titre</th>
-                    <th className="text-left px-4 py-3">Cible</th>
+                    <th className="text-left px-4 py-3">Règle & Cible</th>
+                    <th className="text-left px-4 py-3">Explication (IA)</th>
                     <th className="text-left px-4 py-3">Horodatage</th>
                   </tr>
                 </thead>
@@ -404,9 +427,14 @@ function ReportsPage() {
                         {a.mitre_attack && (
                           <div className="text-[10px] text-muted-foreground font-mono mt-0.5">{a.mitre_attack}</div>
                         )}
+                        <div className="text-xs text-muted-foreground font-mono mt-1 truncate max-w-xs" title={a.target ?? a.dst_ip}>
+                          Cible: {a.target ?? a.dst_ip ?? "—"}
+                        </div>
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs">
-                        <div className="truncate">{a.target ?? a.dst_ip ?? "—"}</div>
+                      <td className="px-4 py-3">
+                        <div className="text-xs bg-primary/5 text-primary border border-primary/20 p-2 rounded-md leading-relaxed">
+                          {generateExplanation(a.title ?? a.rule ?? "", a.target ?? a.dst_ip ?? "", a.tool ?? "")}
+                        </div>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground tabular-nums">
                         {String(a.timestamp ?? "—").slice(0, 19)}

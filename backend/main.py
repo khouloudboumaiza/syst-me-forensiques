@@ -8,6 +8,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,10 +17,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from parsers.identifier import detect_tool
-from parsers import loki_parser, hayabusa_parser
+from parsers import loki_parser, hayabusa_parser, kuiper_parser
 from network_analyzer import analyze_network_csv, is_network_csv
+import pandas as pd
 from threat_intel import enrich_alerts
 from report_generator import generate_report
+from ai_explainer import explain_alert
 from database import init_db, get_db, SessionLocal, CaseFile, Alert
 from typing import Optional
 
@@ -69,6 +72,16 @@ def _process_file_background(case_id: str, file_id: int, saved_path: str,
                 raw_alerts = loki_parser.parse_loki_log(content)
             elif tool == "ml-network":
                 raw_alerts = analyze_network_csv(saved_path)
+            elif tool == "kuiper":
+                if saved_path.endswith(".xlsx") or saved_path.endswith(".csv"):
+                    try:
+                        df = pd.read_excel(saved_path) if saved_path.endswith(".xlsx") else pd.read_csv(saved_path)
+                        raw_alerts = kuiper_parser.parse_kuiper(df=df)
+                    except Exception as e:
+                        print(f"[Kuiper] Erreur de lecture pandas ({saved_path}): {e}")
+                        raw_alerts = kuiper_parser.parse_kuiper(content=content)
+                else:
+                    raw_alerts = kuiper_parser.parse_kuiper(content=content)
             else:
                 case_file.status = "unsupported"
                 db.commit()
@@ -81,43 +94,57 @@ def _process_file_background(case_id: str, file_id: int, saved_path: str,
 
         # Insertion par batch de 100 pour ne pas surcharger SQLite
         BATCH = 100
-        for i in range(0, len(raw_alerts), BATCH):
-            batch = raw_alerts[i : i + BATCH]
-            for a in batch:
-                db.add(Alert(
-                    case_id=case_id,
-                    file_id=file_id,
-                    tool=a.get("tool", tool),
-                    severity=a.get("severity", "info"),
-                    score=a.get("score", 0),
-                    title=a.get("title", ""),
-                    target=a.get("target") or a.get("dst_ip") or "",
-                    details=a.get("details", ""),
-                    timestamp=a.get("timestamp"),
-                    event_id=a.get("event_id"),
-                    channel=a.get("channel"),
-                    mitre_attack=a.get("mitre_attack"),
-                    record_id=a.get("record_id"),
-                    rule_path=a.get("rule_path"),
-                    computer=a.get("computer"),
-                    file_path=a.get("file_path"),
-                    raw_data=a.get("raw_data"),
-                    src_ip=a.get("src_ip"),
-                    dst_ip=a.get("dst_ip"),
-                    confidence=a.get("confidence"),
-                    threat_intel=json.dumps(a["threat_intel"]) if a.get("threat_intel") else None,
-                ))
-            # Commit partiel : les alertes sont visibles dans le dashboard
-            # avant même la fin du traitement complet
+        try:
+            for i in range(0, len(raw_alerts), BATCH):
+                batch = raw_alerts[i : i + BATCH]
+                for a in batch:
+                    # Protection contre des types bizarres qui font planter SQLite
+                    target_val = a.get("target") or a.get("dst_ip") or ""
+                    ts_val = a.get("timestamp")
+                    
+                    db.add(Alert(
+                        case_id=case_id,
+                        file_id=file_id,
+                        tool=str(a.get("tool", tool))[:50],
+                        severity=str(a.get("severity", "info"))[:20],
+                        score=int(a.get("score", 0)) if str(a.get("score")).isdigit() else 0,
+                        title=str(a.get("title", ""))[:255],
+                        target=str(target_val)[:255],
+                        details=str(a.get("details", ""))[:5000],
+                        timestamp=str(ts_val) if ts_val else None,
+                        event_id=str(a.get("event_id"))[:50] if a.get("event_id") else None,
+                        channel=str(a.get("channel"))[:100] if a.get("channel") else None,
+                        mitre_attack=str(a.get("mitre_attack"))[:100] if a.get("mitre_attack") else None,
+                        record_id=str(a.get("record_id"))[:100] if a.get("record_id") else None,
+                        rule_path=str(a.get("rule_path"))[:255] if a.get("rule_path") else None,
+                        computer=str(a.get("computer"))[:100] if a.get("computer") else None,
+                        file_path=str(a.get("file_path"))[:500] if a.get("file_path") else None,
+                        raw_data=str(a.get("raw_data"))[:5000] if a.get("raw_data") else None,
+                        src_ip=str(a.get("src_ip"))[:50] if a.get("src_ip") else None,
+                        dst_ip=str(a.get("dst_ip"))[:50] if a.get("dst_ip") else None,
+                        confidence=str(a.get("confidence"))[:20] if a.get("confidence") else None,
+                        threat_intel=json.dumps(a["threat_intel"]) if a.get("threat_intel") else None,
+                    ))
+                db.commit()
+
+            case_file.status = "parsed"
+            case_file.alert_count = len(raw_alerts)
             db.commit()
-
-        case_file.status = "parsed"
-        case_file.alert_count = len(raw_alerts)
-        db.commit()
-        print(f"[ForensiQ] {filename} → {len(raw_alerts)} alertes insérées.")
-
+            print(f"[ForensiQ] {filename} → {len(raw_alerts)} alertes insérées.")
+            
+        except Exception as e:
+            print(f"[ForensiQ] Erreur insertion base de données ({filename}) : {e}")
+            case_file.status = "error"
+            db.commit()
+            
     except Exception as e:
-        print(f"[ForensiQ] Erreur inattendue : {e}")
+        print(f"[ForensiQ] Erreur inattendue globale : {e}")
+        try:
+            if case_file:
+                case_file.status = "error"
+                db.commit()
+        except:
+            pass
     finally:
         db.close()
 
@@ -169,6 +196,58 @@ async def upload_file(case_id: str, file: UploadFile = File(...),
         "status": "processing",
         "file_id": file_id,
         "message": "Analyse lancée en arrière-plan. Interrogez /cases/{id}/files pour suivre la progression.",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1b. UPLOAD MULTIPLE (plusieurs fichiers en une seule requête)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.post("/cases/{case_id}/upload-multi")
+async def upload_multiple_files(case_id: str, files: List[UploadFile] = File(...),
+                                db: Session = Depends(get_db)):
+    results = []
+    for uploaded_file in files:
+        content = await uploaded_file.read()
+        saved_path = UPLOAD_DIR / f"{case_id}_{uploaded_file.filename}"
+        saved_path.write_bytes(content)
+
+        try:
+            if is_network_csv(str(saved_path)):
+                tool = "ml-network"
+            else:
+                tool = detect_tool(uploaded_file.filename, content)
+        except Exception:
+            tool = detect_tool(uploaded_file.filename, content)
+
+        case_file = CaseFile(
+            case_id=case_id,
+            filename=uploaded_file.filename,
+            tool=tool,
+            status="processing",
+        )
+        db.add(case_file)
+        db.commit()
+        db.refresh(case_file)
+        file_id = case_file.id
+
+        t = threading.Thread(
+            target=_process_file_background,
+            args=(case_id, file_id, str(saved_path), uploaded_file.filename, tool, content),
+            daemon=True,
+        )
+        t.start()
+
+        results.append({
+            "filename": uploaded_file.filename,
+            "tool_detected": tool,
+            "status": "processing",
+            "file_id": file_id,
+        })
+
+    return {
+        "count": len(results),
+        "files": results,
+        "message": f"{len(results)} fichier(s) envoyé(s) en analyse.",
     }
 
 
@@ -278,6 +357,29 @@ def get_alerts(
         
     alerts = query.order_by(Alert.score.desc()).offset(offset).limit(limit).all()
     return [alert_to_dict(a) for a in alerts]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5b. EXPLICATION IA D'UNE ALERTE
+# ─────────────────────────────────────────────────────────────────────────────
+from pydantic import BaseModel
+
+class ExplainRequest(BaseModel):
+    rule: str
+    target: str = ""
+    source: str = ""
+    details: str = ""
+
+@app.post("/explain-alert")
+def explain_alert_endpoint(req: ExplainRequest):
+    """Appelle l'IA (Gemini) pour expliquer une alerte en langage humain."""
+    explanation = explain_alert(
+        rule=req.rule,
+        target=req.target,
+        source=req.source,
+        details=req.details
+    )
+    return {"explanation": explanation}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -417,3 +519,15 @@ def get_file_report_pdf(case_id: str, file_id: int, db: Session = Depends(get_db
 
     return FileResponse(output_path, media_type="application/pdf",
                         filename=f"forensiq_{file_obj.filename}_report.pdf")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. VIRUSTOTAL DYNAMIQUE
+# ─────────────────────────────────────────────────────────────────────────────
+from threat_intel import enrich_hash
+
+@app.get("/vt/hash/{hash_val}")
+def check_hash_vt(hash_val: str):
+    res = enrich_hash(hash_val)
+    if not res:
+        return {"error": "VT API non configurée"}
+    return res

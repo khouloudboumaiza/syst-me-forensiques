@@ -50,8 +50,20 @@ function buildIOCsFromAlerts(alerts: any[], filesMap?: Record<number, string>): 
     if (a.tool === "loki" && a.target) addIoc(a.target, "File");
 
     if (a.threat_intel) {
-      const ti = typeof a.threat_intel === "string" ? JSON.parse(a.threat_intel) : a.threat_intel;
-      for (const h of ti?.hashes ?? []) addIoc(h, "Hash");
+      try {
+        const tiList = typeof a.threat_intel === "string" ? JSON.parse(a.threat_intel) : a.threat_intel;
+        if (Array.isArray(tiList)) {
+          for (const ti of tiList) {
+            if (ti.type === "hash" || ti.type === "ip") {
+              const vtScore = ti.found ? `${ti.malicious}/${(ti.malicious || 0) + (ti.suspicious || 0) + (ti.harmless || 0)}` : "—";
+              const typeLabel = ti.type === "hash" ? "Hash" : "IP";
+              addIoc(ti.value, typeLabel, { vtScore, vtVerdict: ti.verdict });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Error parsing threat_intel", e);
+      }
     }
 
     // Extraction magique (Regex) depuis le texte des alertes
@@ -281,31 +293,45 @@ export function useAnalysisStatus() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Upload : invalide tout le cache et passe en mode polling rapide 30 s
+// Upload : supporte un ou plusieurs fichiers. Invalide le cache et passe en
+// mode polling rapide 30 s.
 // ─────────────────────────────────────────────────────────────────────────────
 export function useUploadFile() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (files: File | File[]) => {
+      const fileArray = Array.isArray(files) ? files : [files];
       const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`${API_URL}/cases/${CASE_ID}/upload`, {
-        method: "POST",
-        body:   formData,
-      });
-      if (!res.ok) throw new Error("Échec de l'upload");
-      return res.json();
+
+      if (fileArray.length === 1) {
+        // Single file → utilise l'endpoint existant
+        formData.append("file", fileArray[0]);
+        const res = await fetch(`${API_URL}/cases/${CASE_ID}/upload`, {
+          method: "POST",
+          body: formData,
+        });
+        if (!res.ok) throw new Error("Échec de l'upload");
+        return res.json();
+      } else {
+        // Multiple files → utilise le nouvel endpoint multi
+        for (const f of fileArray) {
+          formData.append("files", f);
+        }
+        const res = await fetch(`${API_URL}/cases/${CASE_ID}/upload-multi`, {
+          method: "POST",
+          body: formData,
+        });
+        if (!res.ok) throw new Error("Échec de l'upload");
+        return res.json();
+      }
     },
     onMutate: () => {
-      // Dès que l'upload commence → mode polling rapide
       _lastUploadAt = Date.now();
     },
     onSuccess: () => {
-      // Marquer l'instant de fin d'upload (reset la fenêtre de 30 s)
       _lastUploadAt = Date.now();
 
-      // Invalider immédiatement toutes les queries pour forcer un rechargement
       queryClient.invalidateQueries({ queryKey: ["stats",                CASE_ID] });
       queryClient.invalidateQueries({ queryKey: ["alerts",               CASE_ID] });
       queryClient.invalidateQueries({ queryKey: ["correlations",         CASE_ID] });

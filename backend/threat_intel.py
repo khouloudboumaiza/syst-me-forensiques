@@ -17,37 +17,31 @@ import re
 import time
 import requests
 
-VT_API_KEY = os.environ.get("VT_API_KEY", "")
+VT_API_KEY = os.environ.get("VT_API_KEY", "426f9e34b95dc8616aa041a5a3e57d0027bc9dffb36bc1dc7511d2a0bec806e3")
 VT_BASE_URL = "https://www.virustotal.com/api/v3"
 
 _cache: dict[str, dict] = {}
-_last_call_time = 0
-MIN_INTERVAL_SECONDS = 16  # 4 req/min max -> 1 requête toutes les 15s minimum, marge de sécurité
+_rate_limited_until = 0
+
 
 HASH_PATTERN = re.compile(r"\b[a-fA-F0-9]{32}\b|\b[a-fA-F0-9]{40}\b|\b[a-fA-F0-9]{64}\b")
 IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
-
-def _throttle():
-    global _last_call_time
-    elapsed = time.time() - _last_call_time
-    if elapsed < MIN_INTERVAL_SECONDS:
-        time.sleep(MIN_INTERVAL_SECONDS - elapsed)
-    _last_call_time = time.time()
-
-
 def _query_vt(endpoint: str, resource: str) -> dict | None:
+    global _rate_limited_until
     if not VT_API_KEY:
         return None
     if resource in _cache:
         return _cache[resource]
+        
+    if time.time() < _rate_limited_until:
+        return None  # On skip instantanément si le quota VT a été atteint récemment
 
-    _throttle()
     try:
         resp = requests.get(
             f"{VT_BASE_URL}/{endpoint}/{resource}",
             headers={"x-apikey": VT_API_KEY},
-            timeout=15,
+            timeout=5,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -59,15 +53,22 @@ def _query_vt(endpoint: str, resource: str) -> dict | None:
                 "harmless": stats.get("harmless", 0),
                 "verdict": "malicious" if stats.get("malicious", 0) > 0 else "clean",
             }
+        elif resp.status_code == 429:
+            # Quota dépassé (4 req/min), on bloque les appels pendant 60 secondes 
+            # pour ne pas ralentir le traitement des fichiers
+            _rate_limited_until = time.time() + 60
+            return None
         elif resp.status_code == 404:
             result = {"found": False, "verdict": "unknown"}
         else:
             result = {"found": False, "verdict": "error", "status_code": resp.status_code}
+            
+        _cache[resource] = result
+        return result
     except requests.RequestException as e:
         result = {"found": False, "verdict": "error", "error": str(e)}
-
-    _cache[resource] = result
-    return result
+        _cache[resource] = result
+        return result
 
 
 def enrich_hash(file_hash: str) -> dict | None:

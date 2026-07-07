@@ -26,7 +26,12 @@ def detect_tool(filename: str, content: bytes) -> str:
         return "loki"
     if "autopsy" in name:
         return "autopsy"
-    if "kuiper" in name:
+    if "kuiper" in name or "kuiber" in name:
+        return "kuiper"
+        
+    if name.endswith(".xlsx"):
+        # Les fichiers XLSX binaires ne peuvent pas être lus en texte brut.
+        # Par défaut, on les associe à Kuiper pour le nouvel import.
         return "kuiper"
 
     lowered = text.lower()
@@ -53,15 +58,20 @@ def detect_tool(filename: str, content: bytes) -> str:
     if "blackboard_artifacts" in lowered or "autopsy" in lowered:
         return "autopsy"
 
-    # 6. Kuiper: JSON d'événements corrélés
+    # 6. Kuiper: JSON d'événements corrélés ou export direct
     if name.endswith(".json"):
         try:
             data = json.loads(content)
             if isinstance(data, list) and data and isinstance(data[0], dict):
                 keys = set(data[0].keys())
-                if {"artifact", "correlation_id"} & keys:
+                # Clés typiques de Kuiper
+                if {"artifact", "correlation_id"} & keys or {"msg", "level"} & keys:
                     return "kuiper"
         except Exception:
             pass
+    # 7. Fallback : si c'est un CSV ou un JSON générique non reconnu,
+    # on essaie de le parser avec le parseur ultra-flexible de Kuiper.
+    if name.endswith(".csv") or name.endswith(".json"):
+        return "kuiper"
 
     return "unknown"
