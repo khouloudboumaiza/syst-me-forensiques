@@ -30,7 +30,7 @@ function CorrelationsPage() {
           <div className="text-3xl font-semibold mt-2 text-[color:var(--high)] tabular-nums">{riskScore}</div>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider">Alertes host (Hayabusa/Loki)</div>
+          <div className="text-xs text-muted-foreground uppercase tracking-wider">Alertes host (Loki/Hayabusa/Kuiper)</div>
           <div className="text-3xl font-semibold mt-2 tabular-nums">{hostCount}</div>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
@@ -57,7 +57,7 @@ function CorrelationsPage() {
           <Network className="h-10 w-10 mx-auto mb-3 text-muted-foreground opacity-30" />
           <div className="text-sm text-muted-foreground">
             Aucune corrélation host/réseau détectée. Pour obtenir des corrélations, uploadez à la fois
-            un fichier Hayabusa/Loki <strong>et</strong> un CSV réseau ML dans la même fenêtre temporelle.
+            un fichier Host (Hayabusa/Loki/Kuiper) <strong>et</strong> un CSV réseau ML dans la même fenêtre temporelle.
           </div>
         </Card>
       )}

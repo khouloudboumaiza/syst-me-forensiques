@@ -83,7 +83,20 @@ def extract_structured_iocs(alerts: list[dict]):
                     h = t.get("value")
                     key = f"HASH-{h}"
                     if key not in ioc_map:
-                        ioc_map[key] = {"type": "Hash", "value": h, "source": tool, "hits": 0, "firstSeen": timestamp}
+                        mal = t.get("malicious", 0)
+                        sus = t.get("suspicious", 0)
+                        har = t.get("harmless", 0)
+                        tot = mal + sus + har
+                        ioc_map[key] = {
+                            "type": "Hash", 
+                            "value": h, 
+                            "source": tool, 
+                            "hits": 0, 
+                            "firstSeen": timestamp,
+                            "vt_malicious": mal,
+                            "vt_total": tot,
+                            "vt_verdict": t.get("verdict", "unknown")
+                        }
                     ioc_map[key]["hits"] += 1
                     if timestamp < ioc_map[key]["firstSeen"]:
                         ioc_map[key]["firstSeen"] = timestamp
@@ -180,45 +193,172 @@ def generate_report(case_id: str, alerts: list[dict], stats: dict, output_path: 
     if not structured_iocs:
         story.append(Paragraph("Aucun indicateur de compromission direct n'a été extrait.", normal_style))
     else:
-        ioc_table_data = [
+        # Importer la classification IA
+        from ai_explainer import classify_ioc_with_ai
+
+        # Classifier tous les hash IOCs via IA
+        hash_iocs = [ioc for ioc in structured_iocs if ioc["type"] == "Hash"]
+        other_iocs = [ioc for ioc in structured_iocs if ioc["type"] != "Hash"]
+
+        classified_hashes = []
+        counts = {"true_positive": 0, "likely_false_positive": 0, "potential_false_negative": 0, "suspicious_review": 0, "clean": 0}
+        STATUS_LABELS = {
+            "true_positive": "VRAI POSITIF",
+            "likely_false_positive": "FAUX POSITIF",
+            "potential_false_negative": "FAUX NÉGATIF",
+            "suspicious_review": "SUSPECT",
+            "clean": "SAIN",
+        }
+        STATUS_COLORS = {
+            "true_positive": colors.HexColor("#dc2626"),
+            "likely_false_positive": colors.HexColor("#22c55e"),
+            "potential_false_negative": colors.HexColor("#f97316"),
+            "suspicious_review": colors.HexColor("#eab308"),
+            "clean": colors.HexColor("#22c55e"),
+        }
+
+        for ioc in hash_iocs[:15]:  # Max 15 pour ne pas dépasser le timeout
+            classification = classify_ioc_with_ai(
+                hash_value=ioc["value"],
+                file_path=ioc.get("file_path", ""),
+                vt_malicious=ioc.get("vt_malicious", 0),
+                vt_total=ioc.get("vt_total", 0),
+                vt_verdict=ioc.get("vt_verdict", "unknown"),
+                tool=ioc.get("source", "")
+            )
+            ioc["classification"] = classification
+            classified_hashes.append(ioc)
+            status = classification.get("status", "suspicious_review")
+            if status in counts:
+                counts[status] += 1
+
+        # ── RÉSUMÉ GLOBAL DES HASHS ──────────────────────────────────────────
+        story.append(Paragraph("<b>Résumé Global de la Classification des Hashs</b>", h2_style))
+
+        summary_data = [
             [
+                Paragraph("<b>Infectés (VP)</b>", ParagraphStyle("SH", parent=normal_style, fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor("#dc2626"))),
+                Paragraph("<b>Suspects</b>", ParagraphStyle("SH", parent=normal_style, fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor("#eab308"))),
+                Paragraph("<b>Faux Positifs</b>", ParagraphStyle("SH", parent=normal_style, fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor("#22c55e"))),
+                Paragraph("<b>Faux Négatifs</b>", ParagraphStyle("SH", parent=normal_style, fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor("#f97316"))),
+                Paragraph("<b>Sains</b>", ParagraphStyle("SH", parent=normal_style, fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor("#22c55e"))),
+            ],
+            [
+                Paragraph(str(counts["true_positive"]), ParagraphStyle("SV", parent=normal_style, fontSize=18, fontName="Helvetica-Bold", textColor=colors.HexColor("#dc2626"), alignment=TA_CENTER)),
+                Paragraph(str(counts["suspicious_review"]), ParagraphStyle("SV", parent=normal_style, fontSize=18, fontName="Helvetica-Bold", textColor=colors.HexColor("#eab308"), alignment=TA_CENTER)),
+                Paragraph(str(counts["likely_false_positive"]), ParagraphStyle("SV", parent=normal_style, fontSize=18, fontName="Helvetica-Bold", textColor=colors.HexColor("#22c55e"), alignment=TA_CENTER)),
+                Paragraph(str(counts["potential_false_negative"]), ParagraphStyle("SV", parent=normal_style, fontSize=18, fontName="Helvetica-Bold", textColor=colors.HexColor("#f97316"), alignment=TA_CENTER)),
+                Paragraph(str(counts["clean"]), ParagraphStyle("SV", parent=normal_style, fontSize=18, fontName="Helvetica-Bold", textColor=colors.HexColor("#22c55e"), alignment=TA_CENTER)),
+            ]
+        ]
+        t_summary = Table(summary_data, colWidths=[3.6*cm]*5)
+        t_summary.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8fafc")),
+            ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#ffffff")),
+            ("LINEBELOW", (0, 0), (-1, 0), 1, colors.HexColor("#e2e8f0")),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(t_summary)
+        story.append(Spacer(1, 0.4*cm))
+
+        # Actions globales recommandées
+        if counts["true_positive"] > 0:
+            story.append(Paragraph(f"⚠ <b>ACTION REQUISE :</b> {counts['true_positive']} hash(es) confirmé(s) malveillant(s). Isoler immédiatement les machines concernées et supprimer les fichiers infectés.", ParagraphStyle("Action", parent=normal_style, fontSize=9, textColor=colors.HexColor("#dc2626"), backColor=colors.HexColor("#fef2f2"))))
+        if counts["suspicious_review"] > 0:
+            story.append(Paragraph(f"🔍 <b>INVESTIGATION :</b> {counts['suspicious_review']} élément(s) suspects nécessitent une analyse manuelle approfondie.", ParagraphStyle("Action", parent=normal_style, fontSize=9, textColor=colors.HexColor("#92400e"), backColor=colors.HexColor("#fffbeb"))))
+        if counts["potential_false_negative"] > 0:
+            story.append(Paragraph(f"⚡ <b>ATTENTION :</b> {counts['potential_false_negative']} potentiel(s) faux négatif(s) identifié(s) — fichiers non détectés par les AV mais présentant des caractéristiques suspectes.", ParagraphStyle("Action", parent=normal_style, fontSize=9, textColor=colors.HexColor("#9a3412"), backColor=colors.HexColor("#fff7ed"))))
+
+        story.append(Spacer(1, 0.5*cm))
+
+        # ── TABLEAU DÉTAILLÉ DES HASHS CLASSIFIÉS ───────────────────────────
+        if classified_hashes:
+            story.append(Paragraph("<b>Détail des Hashs Analysés par l'IA</b>", h2_style))
+            hash_table_data = [[
+                Paragraph("<b>Hash</b>", ParagraphStyle("TH", parent=normal_style, fontSize=7, fontName="Helvetica-Bold")),
+                Paragraph("<b>Chemin</b>", ParagraphStyle("TH", parent=normal_style, fontSize=7, fontName="Helvetica-Bold")),
+                Paragraph("<b>Score VT</b>", ParagraphStyle("TH", parent=normal_style, fontSize=7, fontName="Helvetica-Bold")),
+                Paragraph("<b>Statut IA</b>", ParagraphStyle("TH", parent=normal_style, fontSize=7, fontName="Helvetica-Bold")),
+                Paragraph("<b>Explication & Recommandation</b>", ParagraphStyle("TH", parent=normal_style, fontSize=7, fontName="Helvetica-Bold")),
+            ]]
+
+            for ioc in classified_hashes:
+                cl = ioc.get("classification", {})
+                status = cl.get("status", "suspicious_review")
+                sc = STATUS_COLORS.get(status, colors.HexColor("#eab308"))
+                sl = STATUS_LABELS.get(status, "SUSPECT")
+
+                # Hash tronqué
+                hval = ioc["value"]
+                hash_display = hval[:16] + "…" + hval[-8:] if len(hval) > 28 else hval
+
+                # Chemin tronqué
+                fpath = ioc.get("file_path") or ioc.get("value") or "—"
+                if len(fpath) > 35:
+                    fpath = "…" + fpath[-33:]
+
+                vt_score = f"{ioc.get('vt_malicious', 0)}/{ioc.get('vt_total', 0)}" if ioc.get('vt_total', 0) > 0 else "N/A"
+                explanation = cl.get("explanation", "—")
+                recommendation = cl.get("recommendation", "—")
+
+                td_style = ParagraphStyle("TD", parent=normal_style, fontSize=7)
+                hash_table_data.append([
+                    Paragraph(hash_display, ParagraphStyle("TDMono", parent=normal_style, fontSize=6, fontName="Courier")),
+                    Paragraph(fpath, ParagraphStyle("TDMono", parent=normal_style, fontSize=6, fontName="Courier")),
+                    Paragraph(vt_score, td_style),
+                    Paragraph(f"<font color='{sc.hexval()}'><b>{sl}</b></font>", td_style),
+                    Paragraph(f"{explanation}<br/><i>💡 {recommendation}</i>", ParagraphStyle("TDExp", parent=normal_style, fontSize=7, leading=10)),
+                ])
+
+            t_hash = Table(hash_table_data, colWidths=[2.8*cm, 2.8*cm, 1.5*cm, 2.3*cm, 8.6*cm])
+            t_hash.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            story.append(t_hash)
+
+        # ── AUTRES IOCs (IP, Fichiers) ───────────────────────────────────────
+        if other_iocs:
+            story.append(Spacer(1, 0.4*cm))
+            story.append(Paragraph("<b>Autres IOCs (IP, Fichiers)</b>", h2_style))
+            ioc_table_data = [[
                 Paragraph("<b>Type</b>", ParagraphStyle("TH", parent=normal_style, fontSize=8, fontName="Helvetica-Bold")),
                 Paragraph("<b>Valeur</b>", ParagraphStyle("TH", parent=normal_style, fontSize=8, fontName="Helvetica-Bold")),
                 Paragraph("<b>Source</b>", ParagraphStyle("TH", parent=normal_style, fontSize=8, fontName="Helvetica-Bold")),
                 Paragraph("<b>Occurrences</b>", ParagraphStyle("TH", parent=normal_style, fontSize=8, fontName="Helvetica-Bold")),
-                Paragraph("<b>1ère détection</b>", ParagraphStyle("TH", parent=normal_style, fontSize=8, fontName="Helvetica-Bold"))
-            ]
-        ]
-        
-        for ioc in structured_iocs[:25]:
-            p_type = Paragraph(f"<b>{ioc['type'].upper()}</b>", ParagraphStyle("TD", parent=normal_style, fontSize=8, textColor=colors.HexColor("#64748b")))
-            
-            # Wrap long values like hashes and paths
-            val = ioc['value']
-            if len(val) > 40:
-                val = val[:20] + "..." + val[-20:]
-            p_val = Paragraph(val, ParagraphStyle("TD", parent=normal_style, fontSize=8, fontName="Courier"))
-            
-            p_src = Paragraph(ioc['source'], ParagraphStyle("TD", parent=normal_style, fontSize=8))
-            p_hits = Paragraph(str(ioc['hits']), ParagraphStyle("TD", parent=normal_style, fontSize=8, alignment=TA_CENTER))
-            p_first = Paragraph(ioc['firstSeen'], ParagraphStyle("TD", parent=normal_style, fontSize=8))
-            
-            ioc_table_data.append([p_type, p_val, p_src, p_hits, p_first])
-            
-        t_iocs = Table(ioc_table_data, colWidths=[2.5*cm, 7*cm, 2.5*cm, 2.5*cm, 3.5*cm])
-        t_iocs.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ]))
-        story.append(t_iocs)
-        if len(structured_iocs) > 25:
-            story.append(Spacer(1, 0.2*cm))
-            story.append(Paragraph(f"<i>Et {len(structured_iocs)-25} autres IOCs mineurs non affichés.</i>", normal_style))
+                Paragraph("<b>1ère détection</b>", ParagraphStyle("TH", parent=normal_style, fontSize=8, fontName="Helvetica-Bold")),
+            ]]
+            for ioc in other_iocs[:20]:
+                val = ioc["value"]
+                if len(val) > 40:
+                    val = val[:20] + "..." + val[-20:]
+                ioc_table_data.append([
+                    Paragraph(f"<b>{ioc['type'].upper()}</b>", ParagraphStyle("TD", parent=normal_style, fontSize=8, textColor=colors.HexColor("#64748b"))),
+                    Paragraph(val, ParagraphStyle("TD", parent=normal_style, fontSize=8, fontName="Courier")),
+                    Paragraph(ioc["source"], ParagraphStyle("TD", parent=normal_style, fontSize=8)),
+                    Paragraph(str(ioc["hits"]), ParagraphStyle("TD", parent=normal_style, fontSize=8, alignment=TA_CENTER)),
+                    Paragraph(ioc["firstSeen"], ParagraphStyle("TD", parent=normal_style, fontSize=8)),
+                ])
+            t_iocs = Table(ioc_table_data, colWidths=[2.5*cm, 7*cm, 2.5*cm, 2.5*cm, 3.5*cm])
+            t_iocs.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            story.append(t_iocs)
 
     story.append(PageBreak())
 

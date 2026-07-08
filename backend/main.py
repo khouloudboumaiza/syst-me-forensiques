@@ -383,6 +383,33 @@ def explain_alert_endpoint(req: ExplainRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 5c. CLASSIFICATION IA D'UN IOC (Hash)
+# ─────────────────────────────────────────────────────────────────────────────
+from ai_explainer import classify_ioc_with_ai
+
+class ClassifyIocRequest(BaseModel):
+    hash_value: str
+    file_path: str = ""
+    vt_malicious: int = 0
+    vt_total: int = 0
+    vt_verdict: str = "unknown"
+    tool: str = ""
+
+@app.post("/classify-ioc")
+def classify_ioc_endpoint(req: ClassifyIocRequest):
+    """Classe un hash IOC via l'IA (vrai positif / faux positif / suspect / sain)."""
+    result = classify_ioc_with_ai(
+        hash_value=req.hash_value,
+        file_path=req.file_path,
+        vt_malicious=req.vt_malicious,
+        vt_total=req.vt_total,
+        vt_verdict=req.vt_verdict,
+        tool=req.tool
+    )
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 6. DISTRIBUTION DE SÉVÉRITÉ
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/severity-distribution")
@@ -417,7 +444,7 @@ def get_tool_distribution(case_id: str, file_id: Optional[int] = None, db: Sessi
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/correlations")
 def get_correlations(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db)):
-    q_host = db.query(Alert).filter(Alert.case_id == case_id, Alert.tool.in_(["hayabusa", "loki"]))
+    q_host = db.query(Alert).filter(Alert.case_id == case_id, Alert.tool.in_(["hayabusa", "loki", "kuiper", "autopsy"]))
     q_net = db.query(Alert).filter(Alert.case_id == case_id, Alert.tool == "ml-network")
     
     if file_id:

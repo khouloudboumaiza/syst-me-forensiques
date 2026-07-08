@@ -47,7 +47,7 @@ function buildIOCsFromAlerts(alerts: any[], filesMap?: Record<number, string>): 
     addIoc(a.dst_ip, "IP");
     addIoc(a.src_ip, "IP");
 
-    if (a.tool === "loki" && a.target) addIoc(a.target, "File");
+    if (["loki", "kuiper", "autopsy"].includes(a.tool) && a.target) addIoc(a.target, "File");
 
     if (a.threat_intel) {
       try {

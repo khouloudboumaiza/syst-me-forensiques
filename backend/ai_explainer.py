@@ -74,3 +74,124 @@ def _fallback_explanation(rule: str, target: str, source: str) -> str:
     if "inject" in r or "hook" in r or "hollowing" in r:
         return f"Technique d'injection de code détectée par {source.upper()}. L'attaquant cherche à exécuter du code malveillant dans un processus légitime ('{t}'), une technique souvent utilisée pour contourner les antivirus."
     return f"L'outil {source.upper()} a signalé la règle '{rule}' sur la cible '{t}' comme suspecte. Cette détection nécessite une investigation approfondie pour confirmer ou infirmer une compromission."
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLASSIFICATION D'IOC (Hash) via IA
+# ─────────────────────────────────────────────────────────────────────────────
+
+from hash_verdict import HashVerdict, VERDICT_LABELS_FR, Verdict, VTResult, FileContext, classify_hash
+
+_FALLBACK_RECOMMENDATIONS = {
+    Verdict.TRUE_POSITIVE: (
+        "Isoler la machine concernée du réseau, mettre le fichier en quarantaine, "
+        "et lancer une recherche de persistance associée (tâches planifiées, clés Run, services)."
+    ),
+    Verdict.LIKELY_FALSE_POSITIVE: (
+        "Aucune action immédiate requise. Documenter l'exception si l'outil de sécurité "
+        "doit être configuré pour ne plus alerter sur ce fichier légitime."
+    ),
+    Verdict.POTENTIAL_FALSE_NEGATIVE: (
+        "Analyse manuelle recommandée : soumettre le fichier à une sandbox comportementale "
+        "et vérifier les connexions réseau associées, malgré un score VirusTotal bas."
+    ),
+    Verdict.SUSPICIOUS_REVIEW: (
+        "Revue manuelle par un analyste recommandée avant conclusion définitive."
+    ),
+    Verdict.CLEAN: "Aucune action requise.",
+}
+
+def _fallback_verdict_explanation(v: HashVerdict) -> str:
+    label = VERDICT_LABELS_FR[v.verdict]
+    rules_txt = " ; ".join(v.triggered_rules)
+    return f"{label} (confiance : {v.confidence_score:.0f}/100). Éléments retenus : {rules_txt}."
+
+def enrich_verdict_with_explanation(v: HashVerdict) -> HashVerdict:
+    """Remplit v.explanation et v.recommendation.
+    Essaie d'abord le LLM (reformulation uniquement), puis retombe sur un texte déterministe.
+    """
+    label = VERDICT_LABELS_FR[v.verdict]
+    rules_txt = "\n".join(f"- {r}" for r in v.triggered_rules)
+
+    prompt = f"""Tu rédiges une section de rapport d'investigation forensique.
+Le verdict ci-dessous a DÉJÀ été déterminé par des règles automatiques déterministes.
+Ta seule tâche : reformuler ces faits en 2-3 phrases claires pour un analyste,
+puis proposer une recommandation concrète en 1 phrase.
+Ne remets jamais en cause le verdict fourni, ne change aucun chiffre.
+
+Hash: {v.file_hash}
+Chemin: {v.file_path}
+Verdict retenu: {label}
+Score de confiance (déterministe): {v.confidence_score:.0f}/100
+Règles ayant produit ce verdict:
+{rules_txt}
+
+Réponds au format:
+EXPLICATION: <2-3 phrases>
+RECOMMANDATION: <1 phrase concrète>
+"""
+
+    if GEMINI_API_KEY:
+        try:
+            resp = requests.post(
+                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+                json={"contents": [{"parts": [{"text": prompt}]}],
+                      "generationConfig": {"maxOutputTokens": 300, "temperature": 0.2}},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if "EXPLICATION:" in raw and "RECOMMANDATION:" in raw:
+                    expl_part = raw.split("EXPLICATION:")[1].split("RECOMMANDATION:")[0].strip()
+                    reco_part = raw.split("RECOMMANDATION:")[1].strip()
+                    v.explanation = expl_part
+                    v.recommendation = reco_part
+                    return v
+        except Exception:
+            pass  # Fallback
+
+    v.explanation = _fallback_verdict_explanation(v)
+    v.recommendation = _FALLBACK_RECOMMENDATIONS[v.verdict]
+    return v
+
+def classify_ioc_with_ai(
+    hash_value: str,
+    file_path: str = "",
+    vt_malicious: int = 0,
+    vt_total: int = 0,
+    vt_verdict: str = "unknown",
+    tool: str = ""
+) -> dict:
+    """
+    Interface compatible avec le frontend et le rapport PDF actuels,
+    utilisant la nouvelle logique HashVerdict.
+    """
+    # 1. Préparation du contexte
+    path_lower = (file_path or "").lower()
+    suspicious_paths = ["temp", "tmp", "appdata", "roaming", "downloads", "public", "startup", "run", "winlogon"]
+    system_paths = ["system32", "windows", "program files", "microsoft"]
+    
+    ctx = FileContext(
+        file_path=file_path,
+        suspicious_path=any(p in path_lower for p in suspicious_paths),
+        known_legitimate_software=any(p in path_lower for p in system_paths)
+    )
+    
+    vt = VTResult(
+        malicious=vt_malicious,
+        total_engines=vt_total,
+    )
+    
+    # 2. Classification déterministe
+    verdict = classify_hash(hash_value, vt, ctx)
+    
+    # 3. Explication IA / Fallback
+    enriched_verdict = enrich_verdict_with_explanation(verdict)
+    
+    # 4. Conversion au format attendu par le reste du code
+    return {
+        "status": enriched_verdict.verdict.value,
+        "confidence": enriched_verdict.confidence_score,
+        "explanation": enriched_verdict.explanation,
+        "recommendation": enriched_verdict.recommendation
+    }
