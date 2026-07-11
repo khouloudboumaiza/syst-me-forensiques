@@ -408,7 +408,7 @@ function ReportsPage() {
                     <th className="text-left px-4 py-3">Sévérité</th>
                     <th className="text-left px-4 py-3">Source</th>
                     <th className="text-left px-4 py-3">Règle & Cible</th>
-                    <th className="text-left px-4 py-3">Explication (IA)</th>
+                    
                     <th className="text-left px-4 py-3">Horodatage</th>
                   </tr>
                 </thead>
@@ -431,11 +431,7 @@ function ReportsPage() {
                           Cible: {a.target ?? a.dst_ip ?? "—"}
                         </div>
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="text-xs bg-primary/5 text-primary border border-primary/20 p-2 rounded-md leading-relaxed">
-                          {generateExplanation(a.title ?? a.rule ?? "", a.target ?? a.dst_ip ?? "", a.tool ?? "")}
-                        </div>
-                      </td>
+                      
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground tabular-nums">
                         {String(a.timestamp ?? "—").slice(0, 19)}
                       </td>

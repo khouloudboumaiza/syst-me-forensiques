@@ -15,7 +15,7 @@ import re
 KNOWN_KEYS = [
     "ALERT", "WARNING", "FILE", "FILENAME", "HOST", "SCORE", "SUBSCORE",
     "TYPE", "REASON_1", "REASON_2", "REASON_3", "MATCH", "MD5", "SHA1",
-    "SHA256", "FIRST_BYTES", "SIZE", "MODULE",
+    "SHA256", "FIRST_BYTES", "SIZE", "MODULE", "DESC", "HOST_IP", "HOST_NAME"
 ]
 _KEYS_ALT = "|".join(KNOWN_KEYS)
 KV_PATTERN = re.compile(rf"\b({_KEYS_ALT}):(.*?)(?=\s+(?:{_KEYS_ALT}):|$)")
@@ -59,14 +59,25 @@ def parse_loki_log(raw_bytes: bytes) -> list[dict]:
         target = fields.get("FILE") or fields.get("FILENAME") or fields.get("HOST") or "N/A"
         reason = fields.get("REASON_1") or fields.get("REASON") or "Loki detection"
 
-        alerts.append({
+        threat_intel = []
+        for hash_key in ("SHA256", "SHA1", "MD5"):
+            h = fields.get(hash_key)
+            if h and re.match(r"^[a-fA-F0-9]{32,64}$", h):
+                threat_intel.append({"type": "hash", "value": h.lower()})
+
+        alert = {
             "tool": "loki",
             "severity": score_to_severity(score),
             "score": score,
             "title": reason,
             "target": target,
+            "src_ip": fields.get("HOST_IP"),
+            "file_path": target if ("\\" in target or "/" in target) else None,
             "details": line.strip(),
             "timestamp": timestamp,
-        })
+        }
+        if threat_intel:
+            alert["threat_intel"] = threat_intel
+        alerts.append(alert)
 
     return alerts

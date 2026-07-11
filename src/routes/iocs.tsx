@@ -26,28 +26,31 @@ const STATUS_CONFIG: Record<string, { label: string; icon: any; cls: string }> =
   clean:                    { label: "Sain",                   icon: ShieldCheck,  cls: "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30" },
 };
 
+const isHashLike = (value?: string) => typeof value === "string" && /[a-f0-9]{8,64}/i.test(value);
+
 function VirusTotalCell({ ioc }: { ioc: any }) {
-  const isHash = ioc.type === "Hash" || ioc.type === "IP";
+  const lookupHash = ioc.linkedHash || (ioc.type === "Hash" ? ioc.value : "");
+  const isHash = ioc.type === "Hash" || ioc.type === "IP" || Boolean(lookupHash);
   if (ioc.vtScore && ioc.vtScore !== "—") {
     return (
-      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${ioc.vtVerdict === "malicious" ? "bg-destructive/15 text-destructive border-destructive/30" : ioc.vtVerdict === "clean" ? "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30" : "bg-[color:var(--medium)]/15 text-[color:var(--medium)] border-[color:var(--medium)]/30"}`}>
+      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${ioc.vtVerdict === "malicious" ? "bg-destructive/15 text-destructive border-destructive/30" : ioc.vtVerdict === "clean" ? "bg-success/15 text-success border-success/30" : "bg-medium/15 text-medium border-medium/30"}`}>
         {ioc.vtScore}
       </span>
     );
   }
   const { data, isLoading } = useQuery({
-    queryKey: ["vt", ioc.type, ioc.value],
-    queryFn: () => fetch(`${API_URL}/vt/hash/${ioc.value}`).then((r) => r.json()),
-    enabled: isHash && !ioc.vtScore,
+    queryKey: ["vt", ioc.type, lookupHash || ioc.value],
+    queryFn: () => fetch(`${API_URL}/vt/hash/${encodeURIComponent(lookupHash || ioc.value)}`).then((r) => r.json()),
+    enabled: isHash && isHashLike(lookupHash || ioc.value) && !ioc.vtScore,
     staleTime: Infinity,
   });
-  if (!isHash) return <span className="text-xs text-muted-foreground">—</span>;
+  if (!isHash || !isHashLike(lookupHash || ioc.value)) return <span className="text-xs text-muted-foreground">—</span>;
   if (isLoading) return <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />;
   if (data && data.found) {
     const total = (data.malicious || 0) + (data.suspicious || 0) + (data.harmless || 0);
     const scoreStr = `${data.malicious}/${total}`;
     return (
-      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${data.verdict === "malicious" ? "bg-destructive/15 text-destructive border-destructive/30" : data.verdict === "clean" ? "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30" : "bg-[color:var(--medium)]/15 text-[color:var(--medium)] border-[color:var(--medium)]/30"}`}>
+      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${data.verdict === "malicious" ? "bg-destructive/15 text-destructive border-destructive/30" : data.verdict === "clean" ? "bg-success/15 text-success border-success/30" : "bg-medium/15 text-medium border-medium/30"}`}>
         {scoreStr}
       </span>
     );
@@ -60,10 +63,11 @@ function AIClassifyCell({ ioc }: { ioc: any }) {
   const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [result, setResult] = useState<any>(null);
 
+  const lookupHash = ioc.linkedHash || (ioc.type === "Hash" ? ioc.value : "");
   const { data: vtData } = useQuery({
-    queryKey: ["vt", ioc.type, ioc.value],
-    queryFn: () => fetch(`${API_URL}/vt/hash/${ioc.value}`).then((r) => r.json()),
-    enabled: ioc.type === "Hash",
+    queryKey: ["vt", ioc.type, lookupHash || ioc.value],
+    queryFn: () => fetch(`${API_URL}/vt/hash/${encodeURIComponent(lookupHash || ioc.value)}`).then((r) => r.json()),
+    enabled: isHashLike(lookupHash || ioc.value),
     staleTime: Infinity,
   });
 
@@ -71,7 +75,7 @@ function AIClassifyCell({ ioc }: { ioc: any }) {
     e.stopPropagation();
     if (state === "loading") return;
 
-    const cacheKey = `${ioc.value}|${ioc.type}`;
+    const cacheKey = `${ioc.value}|${ioc.type}|${lookupHash || ""}`;
     if (classifyCache[cacheKey]) {
       setResult(classifyCache[cacheKey]);
       setState("done");
@@ -81,8 +85,8 @@ function AIClassifyCell({ ioc }: { ioc: any }) {
     setState("loading");
     try {
       const body: any = {
-        hash_value: ioc.value,
-        file_path: ioc.filename || "",
+        hash_value: lookupHash || (ioc.type === "Hash" ? ioc.value : ""),
+        file_path: ioc.filename || ioc.value || "",
         tool: ioc.source || "",
         vt_malicious: 0,
         vt_total: 0,
@@ -256,7 +260,7 @@ function IocsPage() {
                   <th className="text-left px-4 py-3">VirusTotal</th>
                   <th className="text-left px-4 py-3">Occurrences</th>
                   <th className="text-left px-4 py-3">1ère détection</th>
-                  <th className="text-left px-4 py-3 min-w-[220px]">
+                  <th className="text-left px-4 py-3 min-w-55">
                     <span className="inline-flex items-center gap-1">
                       <Sparkles className="h-3 w-3 text-violet-400" /> Classification IA
                     </span>
@@ -283,10 +287,10 @@ function IocsPage() {
                       {String(i.firstSeen ?? "—").slice(0, 19)}
                     </td>
                     <td className="px-4 py-3">
-                      {i.type === "Hash" ? (
+                      {i.type === "Hash" || i.type === "File" ? (
                         <AIClassifyCell ioc={i} />
                       ) : (
-                        <span className="text-xs text-muted-foreground">— (Hash uniquement)</span>
+                        <span className="text-xs text-muted-foreground">—</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
@@ -296,7 +300,7 @@ function IocsPage() {
                         className="h-7 w-7 grid place-items-center rounded border border-border hover:bg-muted transition-colors"
                       >
                         {copied === i.value ? (
-                          <span className="text-[8px] text-[color:var(--success)] font-bold">OK</span>
+                          <span className="text-[8px] text-success font-bold">OK</span>
                         ) : (
                           <Copy className="h-3 w-3" />
                         )}

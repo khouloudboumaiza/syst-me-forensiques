@@ -16,8 +16,7 @@ import os
 import re
 import time
 import requests
-
-VT_API_KEY = os.environ.get("VT_API_KEY", "426f9e34b95dc8616aa041a5a3e57d0027bc9dffb36bc1dc7511d2a0bec806e3")
+VT_API_KEY = "6379530ccb506878d88036bd1b2becd120a6eb43b20807010786fb08b873a5ef"
 VT_BASE_URL = "https://www.virustotal.com/api/v3"
 
 _cache: dict[str, dict] = {}
@@ -104,16 +103,48 @@ def enrich_alerts(alerts: list[dict], max_enrichments: int = 20) -> list[dict]:
         if enriched_count >= max_enrichments:
             break
 
-        indicators = extract_indicators(alert.get("details", "") + " " + alert.get("raw_data", ""))
-        threat_info = []
+        # Hashes déjà extraits par le parser (ex: Loki MD5/SHA256)
+        existing_ti = alert.get("threat_intel") or []
+        if isinstance(existing_ti, list):
+            updated_ti = []
+            for entry in existing_ti:
+                if entry.get("type") == "hash" and entry.get("value") and not entry.get("found"):
+                    if enriched_count >= max_enrichments:
+                        updated_ti.append(entry)
+                        continue
+                    r = enrich_hash(entry["value"])
+                    if r:
+                        updated_ti.append({"type": "hash", "value": entry["value"], **r})
+                        if r.get("found"):
+                            enriched_count += 1
+                    else:
+                        updated_ti.append(entry)
+                else:
+                    updated_ti.append(entry)
+            if updated_ti:
+                alert["threat_intel"] = updated_ti
 
-        for h in indicators["hashes"][:1]:  # 1 hash max par alerte pour économiser le quota
+        indicators = extract_indicators(
+            (alert.get("details") or "") + " " + (alert.get("raw_data") or "") + " " + (alert.get("target") or "")
+        )
+        threat_info = list(alert.get("threat_intel") or [])
+        existing_values = {t.get("value") for t in threat_info if t.get("value")}
+
+        for h in indicators["hashes"][:1]:
+            if h in existing_values:
+                continue
+            if enriched_count >= max_enrichments:
+                break
             r = enrich_hash(h)
             if r and r.get("found"):
                 threat_info.append({"type": "hash", "value": h, **r})
                 enriched_count += 1
 
         for ip in indicators["ips"][:1]:
+            if ip in existing_values:
+                continue
+            if enriched_count >= max_enrichments:
+                break
             r = enrich_ip(ip)
             if r and r.get("found"):
                 threat_info.append({"type": "ip", "value": ip, **r})
@@ -121,7 +152,6 @@ def enrich_alerts(alerts: list[dict], max_enrichments: int = 20) -> list[dict]:
 
         if threat_info:
             alert["threat_intel"] = threat_info
-            # Si VirusTotal confirme du malveillant, on remonte la sévérité
             if any(t.get("verdict") == "malicious" for t in threat_info):
                 alert["severity"] = "critical"
                 alert["score"] = 100

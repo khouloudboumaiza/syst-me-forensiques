@@ -44,26 +44,39 @@ function buildIOCsFromAlerts(alerts: any[], filesMap?: Record<number, string>): 
       iocMap.get(key)!.hits += 1;
     };
 
-    addIoc(a.dst_ip, "IP");
-    addIoc(a.src_ip, "IP");
-
-    if (["loki", "kuiper", "autopsy"].includes(a.tool) && a.target) addIoc(a.target, "File");
+    let linkedHash = "";
+    let vtScore = "—";
+    let vtVerdict: string | undefined;
 
     if (a.threat_intel) {
       try {
         const tiList = typeof a.threat_intel === "string" ? JSON.parse(a.threat_intel) : a.threat_intel;
         if (Array.isArray(tiList)) {
+          const hashEntry = tiList.find((ti: any) => ti.type === "hash" && ti.value);
+          if (hashEntry) {
+            linkedHash = hashEntry.value;
+            vtScore = hashEntry.found ? `${hashEntry.malicious}/${(hashEntry.malicious || 0) + (hashEntry.suspicious || 0) + (hashEntry.harmless || 0)}` : "—";
+            vtVerdict = hashEntry.verdict;
+          }
           for (const ti of tiList) {
             if (ti.type === "hash" || ti.type === "ip") {
-              const vtScore = ti.found ? `${ti.malicious}/${(ti.malicious || 0) + (ti.suspicious || 0) + (ti.harmless || 0)}` : "—";
+              const score = ti.found ? `${ti.malicious}/${(ti.malicious || 0) + (ti.suspicious || 0) + (ti.harmless || 0)}` : "—";
               const typeLabel = ti.type === "hash" ? "Hash" : "IP";
-              addIoc(ti.value, typeLabel, { vtScore, vtVerdict: ti.verdict });
+              addIoc(ti.value, typeLabel, { vtScore: score, vtVerdict: ti.verdict });
             }
           }
         }
       } catch (e) {
         console.error("Error parsing threat_intel", e);
       }
+    }
+
+    addIoc(a.dst_ip, "IP");
+    addIoc(a.src_ip, "IP");
+
+    const fileValue = a.file_path ?? a.target ?? "";
+    if (fileValue) {
+      addIoc(fileValue, "File", { linkedHash, vtScore, vtVerdict });
     }
 
     // Extraction magique (Regex) depuis le texte des alertes

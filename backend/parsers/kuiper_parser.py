@@ -28,8 +28,20 @@ def parse_kuiper(content: bytes = None, df: pd.DataFrame = None) -> list[dict]:
                 sev = "medium"
             elif "low" in sev or "1" in sev or "faibl" in sev:
                 sev = "low"
+            elif "info" in sev:
+                sev = "low"  # Remplacer info par low
             else:
-                sev = "info"
+                sev = "medium"  # Défaut à medium au lieu de info
+
+            # S'il n'y a pas de sévérité, on tente de deviner avec l'EventID
+            event_id = str(row.get("Data.Event.System.EventID.#text", ""))
+            if event_id:
+                if event_id in ("4625", "1102"):
+                    sev = "high"
+                elif event_id in ("4688", "4698", "4720"):
+                    sev = "medium"
+                elif event_id in ("4624", "4634", "4672"):
+                    sev = "low"
                 
             alert = {
                 "tool": "kuiper",
