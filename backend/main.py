@@ -710,12 +710,15 @@ def get_report_pdf(case_id: str, db: Session = Depends(get_db)):
         files_meta = [{"id": f.id, "filename": f.filename, "tool": f.tool} for f in files]
     alerts = [
         alert_to_dict(a, upload_filename=files_map.get(a.file_id))
-        for a in db.query(Alert).filter(Alert.case_id == case_id).limit(2000).all()
+        for a in db.query(Alert).filter(Alert.case_id == case_id).limit(1000).all()
     ]
     stats = get_stats(case_id, db)
 
     os.makedirs("reports", exist_ok=True)
     output_path = f"reports/{case_id}_report.pdf"
+    if os.path.exists(output_path):
+        return FileResponse(output_path, media_type="application/pdf",
+                            filename=f"forensiq_{case_id}_report.pdf")
     generate_report(case_id, alerts, stats, output_path, files_meta=files_meta)
 
     return FileResponse(output_path, media_type="application/pdf",
@@ -755,6 +758,9 @@ def get_file_report_pdf(case_id: str, file_id: int, db: Session = Depends(get_db
 
     os.makedirs("reports", exist_ok=True)
     output_path = f"reports/{case_id}_file_{file_id}_report.pdf"
+    if os.path.exists(output_path):
+        return FileResponse(output_path, media_type="application/pdf",
+                            filename=f"forensiq_{file_obj.filename}_report.pdf")
     generate_report(case_id, alerts, stats, output_path, filename=file_obj.filename, files_meta=files_meta)
 
     return FileResponse(output_path, media_type="application/pdf",

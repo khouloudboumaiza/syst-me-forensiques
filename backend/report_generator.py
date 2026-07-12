@@ -23,6 +23,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from ai_explainer import explain_alert as ai_explain_alert
 
 # ── Palette noir et blanc professionnel ────────────────────────────────────────
 BLACK      = colors.black
@@ -45,6 +46,9 @@ STATUS_LABELS = {
     "potential_false_negative": "Faux Négatif (FN)",
     "clean":                    "Sain",
 }
+REPORT_AI_ENABLED = os.getenv("FORENSIQ_ENABLE_REPORT_AI", "0").lower() in {"1", "true", "yes", "on"}
+REPORT_AI_LIMIT = 8
+
 STATUS_SHORT = {
     "true_positive":            "VP",
     "suspicious_review":        "Suspects",
@@ -124,54 +128,17 @@ def _classify_ioc(ioc: dict) -> dict:
 def _generate_ai_summary(alerts: list[dict], classified: list[dict],
                           correlated_events: list[dict], threat_label: str,
                           incident_name: str) -> str:
-    """Génère un paragraphe de synthèse en langage humain via Gemini ou fallback."""
-    import os, requests
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-
-    n_crit   = sum(1 for a in alerts if a.get("severity") == "critical")
-    n_high   = sum(1 for a in alerts if a.get("severity") == "high")
-    n_vp     = sum(1 for c in classified if c.get("classification", {}).get("status") == "true_positive")
-    n_susp   = sum(1 for c in classified if c.get("classification", {}).get("status") == "suspicious_review")
-    n_correl = len(correlated_events)
-
-    if GEMINI_API_KEY:
-        prompt = (
-            f"Tu rédiges la section synthèse d'un rapport forensique professionnel.\n"
-            f"Incident : {incident_name}\n"
-            f"Niveau de menace : {threat_label}\n"
-            f"Alertes : {len(alerts)} dont {n_crit} critiques et {n_high} élevées.\n"
-            f"Éléments classifiés malveillants (VP) : {n_vp}\n"
-            f"Éléments suspects : {n_susp}\n"
-            f"Corrélations host/réseau détectées : {n_correl}\n\n"
-            "En 3-4 phrases techniques et professionnelles en français, résume les faits "
-            "clés de cet incident et les risques associés pour un analyste SOC. "
-            "Ne commence pas par 'Bien sûr' ou formule de politesse."
+    """Produit une synthèse d'incident rapidement, avec IA seulement si activée."""
+    if not REPORT_AI_ENABLED:
+        n_crit = sum(1 for a in alerts if a.get("severity") == "critical")
+        n_high = sum(1 for a in alerts if a.get("severity") == "high")
+        return (
+            f"L'analyse de l'incident <b>{incident_name}</b> révèle un niveau de menace <b>{threat_label}</b> "
+            f"avec {len(alerts)} événement(s) observé(s), dont {n_crit} critique(s) et {n_high} élevé(s). "
+            "Le traitement est consolidé par des corrélations host/réseau et par la classification des IOCs."
         )
-        try:
-            resp = requests.post(
-                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
-                json={"contents": [{"parts": [{"text": prompt}]}],
-                      "generationConfig": {"maxOutputTokens": 250, "temperature": 0.3}},
-                timeout=10
-            )
-            if resp.status_code == 200:
-                text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                if text:
-                    return text
-        except Exception:
-            pass
-
-    # Fallback déterministe
-    parts = [f"L'analyse de l'incident <b>{incident_name}</b> révèle un niveau de menace <b>{threat_label}</b>, "
-             f"avec {len(alerts)} événement(s) détecté(s) dont {n_crit} critique(s) et {n_high} élevé(s)."]
-    if n_vp > 0:
-        parts.append(f"{n_vp} indicateur(s) ont été classifiés comme <b>vrais positifs</b> (menace confirmée par VirusTotal).")
-    if n_susp > 0:
-        parts.append(f"{n_susp} élément(s) supplémentaire(s) restent suspects et nécessitent une investigation manuelle.")
-    if n_correl > 0:
-        parts.append(f"{n_correl} corrélation(s) host/réseau ont été détectées, suggérant une activité coordonnée.")
-    return " ".join(parts)
+    from ai_explainer import explain_incident_summary
+    return explain_incident_summary(incident_name, threat_label, alerts, classified, correlated_events)
 
 
 # ── Extracteur IOC ─────────────────────────────────────────────────────────────
@@ -301,7 +268,9 @@ def _table_style_header(row_color=True) -> TableStyle:
 # ── Sections Rapport ───────────────────────────────────────────────────────────
 
 def _section_alerts(incident_alerts: list[dict], s: dict) -> list:
-    """Tableau de toutes les alertes de l'incident."""
+    """Tableau de toutes les alertes de l'incident avec explication IA."""
+    from ai_explainer import explain_alert
+
     story = []
     story.append(Paragraph("<b>Alertes détectées</b>", s["h2"]))
     story.append(Paragraph(
@@ -321,12 +290,23 @@ def _section_alerts(incident_alerts: list[dict], s: dict) -> list:
         Paragraph("<b>Explication (IA)</b>", s["td"]),
     ]
     rows = [header]
-    for a in sorted_alerts[:50]:
+    for idx, a in enumerate(sorted_alerts[:50]):
         rule   = str(a.get("title") or "—")[:60]
         target = str(a.get("target") or a.get("dst_ip") or "—")[:35]
         ts     = str(a.get("timestamp") or "—")[:19]
         sev    = (a.get("severity") or "info").upper()
-        expl   = str(a.get("explanation") or _fallback_explain(rule, target, a.get("tool", "")))
+        expl_source = str(a.get("details") or a.get("description") or "")
+        if a.get("explanation"):
+            expl = str(a.get("explanation"))
+        elif REPORT_AI_ENABLED and idx < REPORT_AI_LIMIT:
+            expl = ai_explain_alert(
+                rule=rule,
+                target=target,
+                source=str(a.get("tool") or "système"),
+                details=expl_source,
+            )
+        else:
+            expl = _fallback_explain(rule, target, a.get("tool", ""))
         rows.append([
             Paragraph(sev,   s["td"]),
             Paragraph(rule,  s["td"]),
@@ -486,12 +466,22 @@ def _section_timeline(incident_alerts: list[dict], s: dict) -> list:
         Paragraph("<b>Explication</b>",     s["td"]),
     ]
     rows = [tl_header]
-    for a in priority[:40]:
+    for idx, a in enumerate(priority[:40]):
         rule   = str(a.get("title") or "—")[:55]
         target = str(a.get("target") or a.get("dst_ip") or "—")[:32]
         ts     = str(a.get("timestamp") or "—")[:19]
         sev    = (a.get("severity") or "info").upper()
-        expl   = str(a.get("explanation") or _fallback_explain(rule, target, a.get("tool", "")))
+        if a.get("explanation"):
+            expl = str(a.get("explanation"))
+        elif REPORT_AI_ENABLED and idx < REPORT_AI_LIMIT:
+            expl = ai_explain_alert(
+                rule=rule,
+                target=target,
+                source=str(a.get("tool") or "système"),
+                details=str(a.get("details") or a.get("description") or ""),
+            )
+        else:
+            expl = _fallback_explain(rule, target, a.get("tool", ""))
         rows.append([
             Paragraph(ts,     s["td"]),
             Paragraph(sev,    s["td"]),

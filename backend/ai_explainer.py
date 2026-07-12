@@ -7,52 +7,81 @@ Utilisé pour enrichir les alertes forensiques avec un contexte pédagogique.
 import os
 import json
 import requests
+from typing import Optional
+
+NVIDIA_API_KEY = os.environ.get(
+    "NVIDIA_API_KEY",
+    "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"
+)
+NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
 GEMINI_API_KEY = os.environ.get(
     "GEMINI_API_KEY",
-    # Clé gratuite Google AI Studio - remplacer par votre propre clé si nécessaire
-    # Obtenir une clé gratuite sur : https://aistudio.google.com/app/apikey
     ""
 )
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
+_NVIDIA_RESPONSE_CACHE: dict[tuple[str, float, int], str] = {}
+
+
+def _call_nvidia_chat(prompt: str, temperature: float = 0.35, max_tokens: int = 450) -> Optional[str]:
+    """Appelle le modèle NVIDIA via l'API chat completions."""
+    if not NVIDIA_API_KEY:
+        return None
+
+    cache_key = (prompt.strip(), round(temperature, 2), int(max_tokens))
+    if cache_key in _NVIDIA_RESPONSE_CACHE:
+        return _NVIDIA_RESPONSE_CACHE[cache_key]
+
+    payload = {
+        "model": "qwen/qwen3.5-397b-a17b",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": 0.95,
+        "top_k": 20,
+        "presence_penalty": 0,
+        "repetition_penalty": 1,
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(NVIDIA_URL, headers=headers, json=payload, timeout=(2.5, 5.0))
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        if text:
+            _NVIDIA_RESPONSE_CACHE[cache_key] = text
+        return text
+    except Exception:
+        return None
+
 
 def explain_alert(rule: str, target: str, source: str, details: str = "") -> str:
     """
-    Appelle l'API Gemini pour générer une explication en langage humain.
-    Retourne l'explication ou un message d'erreur fallback.
+    Génère une explication professionnelle et concise pour une alerte via NVIDIA.
+    Retourne un texte de secours si l'API n'est pas disponible.
     """
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "AIzaSyDefault":
-        return _fallback_explanation(rule, target, source)
+    prompt = f"""Tu es un expert en cybersécurité forensique et en réponse à incident.
+Rédige une explication professionnelle en français, concise et utile pour un analyste SOC.
+Ne mets pas de liste, limite-toi à 2 à 4 phrases factuelles et opérationnelles.
 
-    prompt = f"""Tu es un expert en cybersécurité et en forensique informatique.
-Explique l'alerte suivante en langage humain clair et détaillé pour un analyste SOC débutant.
-Sois concis (3-4 phrases max), factuel et pédagogique. Réponds en français.
-
-Outil de détection: {source.upper()}
-Règle déclenchée: {rule}
+Outil de détection: {source.upper() or 'outil inconnu'}
+Règle déclenchée: {rule or 'règle non renseignée'}
 Cible/Hôte: {target or 'non spécifié'}
-Détails techniques: {details[:300] if details else 'aucun détail supplémentaire'}
+Détails techniques: {details[:600] if details else 'aucun détail supplémentaire'}
 
 Explication:"""
 
-    try:
-        resp = requests.post(
-            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 200, "temperature": 0.3}
-            },
-            timeout=8
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return text.strip()
-        else:
-            return _fallback_explanation(rule, target, source)
-    except Exception:
-        return _fallback_explanation(rule, target, source)
+    ai_text = _call_nvidia_chat(prompt, temperature=0.35, max_tokens=280)
+    if ai_text:
+        return ai_text
+    return _fallback_explanation(rule, target, source)
 
 
 def _fallback_explanation(rule: str, target: str, source: str) -> str:
@@ -107,52 +136,68 @@ def _fallback_verdict_explanation(v: HashVerdict) -> str:
     return f"{label} (confiance : {v.confidence_score:.0f}/100). Éléments retenus : {rules_txt}."
 
 def enrich_verdict_with_explanation(v: HashVerdict) -> HashVerdict:
-    """Remplit v.explanation et v.recommendation.
-    Essaie d'abord le LLM (reformulation uniquement), puis retombe sur un texte déterministe.
-    """
+    """Remplit v.explanation et v.recommendation avec une formulation IA professionnelle."""
     label = VERDICT_LABELS_FR[v.verdict]
     rules_txt = "\n".join(f"- {r}" for r in v.triggered_rules)
 
     prompt = f"""Tu rédiges une section de rapport d'investigation forensique.
-Le verdict ci-dessous a DÉJÀ été déterminé par des règles automatiques déterministes.
-Ta seule tâche : reformuler ces faits en 2-3 phrases claires pour un analyste,
-puis proposer une recommandation concrète en 1 phrase.
+Le verdict ci-dessous a déjà été déterminé par des règles automatiques déterministes.
+Ta seule tâche est de reformuler ces faits en 2 à 3 phrases techniques et professionnelles,
+puis d'ajouter une recommandation concrète en 1 phrase.
 Ne remets jamais en cause le verdict fourni, ne change aucun chiffre.
 
 Hash: {v.file_hash}
 Chemin: {v.file_path}
 Verdict retenu: {label}
-Score de confiance (déterministe): {v.confidence_score:.0f}/100
+Score de confiance déterministe: {v.confidence_score:.0f}/100
 Règles ayant produit ce verdict:
 {rules_txt}
 
-Réponds au format:
+Réponds au format exact suivant:
 EXPLICATION: <2-3 phrases>
 RECOMMANDATION: <1 phrase concrète>
 """
 
-    if GEMINI_API_KEY:
-        try:
-            resp = requests.post(
-                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
-                json={"contents": [{"parts": [{"text": prompt}]}],
-                      "generationConfig": {"maxOutputTokens": 300, "temperature": 0.2}},
-                timeout=10
-            )
-            if resp.status_code == 200:
-                raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                if "EXPLICATION:" in raw and "RECOMMANDATION:" in raw:
-                    expl_part = raw.split("EXPLICATION:")[1].split("RECOMMANDATION:")[0].strip()
-                    reco_part = raw.split("RECOMMANDATION:")[1].strip()
-                    v.explanation = expl_part
-                    v.recommendation = reco_part
-                    return v
-        except Exception:
-            pass  # Fallback
+    ai_text = _call_nvidia_chat(prompt, temperature=0.2, max_tokens=360)
+    if ai_text and "EXPLICATION:" in ai_text and "RECOMMANDATION:" in ai_text:
+        expl_part = ai_text.split("EXPLICATION:")[1].split("RECOMMANDATION:")[0].strip()
+        reco_part = ai_text.split("RECOMMANDATION:")[1].strip()
+        v.explanation = expl_part
+        v.recommendation = reco_part
+        return v
 
     v.explanation = _fallback_verdict_explanation(v)
     v.recommendation = _FALLBACK_RECOMMENDATIONS[v.verdict]
     return v
+
+
+def explain_incident_summary(incident_name: str, threat_label: str, alerts: list[dict],
+                             classified: list[dict], correlated_events: list[dict]) -> str:
+    """Produit une synthèse professionnelle d'incident en français via NVIDIA."""
+    n_crit = sum(1 for a in alerts if a.get("severity") == "critical")
+    n_high = sum(1 for a in alerts if a.get("severity") == "high")
+    n_vp = sum(1 for c in classified if c.get("classification", {}).get("status") == "true_positive")
+    n_susp = sum(1 for c in classified if c.get("classification", {}).get("status") == "suspicious_review")
+    n_correl = len(correlated_events)
+
+    prompt = f"""Tu rédiges une synthèse professionnelle de rapport d'investigation forensique.
+Incident: {incident_name}
+Niveau de menace: {threat_label}
+Alertes détectées: {len(alerts)} dont {n_crit} critiques et {n_high} élevées.
+Éléments classifiés vrais positifs: {n_vp}
+Éléments suspects: {n_susp}
+Corrélations host/réseau: {n_correl}
+
+Rédige 3 à 4 phrases techniques et concises en français pour un analyste SOC. Mets l'accent sur la compromission probable, les risques et les prochaines actions prioritaires.
+"""
+    ai_text = _call_nvidia_chat(prompt, temperature=0.3, max_tokens=320)
+    if ai_text:
+        return ai_text.strip()
+
+    return (
+        f"L'analyse de l'incident {incident_name} révèle un niveau de menace {threat_label} avec {len(alerts)} événement(s) observé(s). "
+        f"{n_vp} élément(s) ont été classifié(s) comme vrai positif et {n_susp} élément(s) restent suspects, ce qui justifie une investigation approfondie."
+    )
 
 def classify_ioc_with_ai(
     hash_value: str,
