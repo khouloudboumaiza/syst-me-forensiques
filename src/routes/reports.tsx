@@ -157,12 +157,7 @@ function ReportsPage() {
           <span>Rapport généré automatiquement depuis les données forensiques du dossier <strong className="text-foreground">demo</strong></span>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handlePrint}
-            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted transition-colors"
-          >
-            <Printer className="h-4 w-4" /> Imprimer
-          </button>
+         
           <a
             href={`${API_URL}/cases/demo/report/pdf`}
             target="_blank"
@@ -171,14 +166,7 @@ function ReportsPage() {
           >
             <Download className="h-4 w-4" /> Télécharger PDF <ArrowUpRight className="h-3.5 w-3.5" />
           </a>
-          <a
-            href={`${API_URL}/cases/demo/report`}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted transition-colors"
-          >
-            <FileText className="h-4 w-4" /> Export JSON
-          </a>
+          
         </div>
       </div>
 
