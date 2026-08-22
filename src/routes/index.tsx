@@ -111,7 +111,7 @@ function Overview() {
   const isLoading = statsLoading || alertsLoading;
 
   return (
-    <AppShell title="Vue d'ensemble" subtitle={`Dossier : demo`}>
+    <AppShell title="Vue d'ensemble" subtitle={``}>
       {/* Case header banner */}
       <Card className="p-5 mb-6 relative overflow-hidden">
         <div
@@ -127,7 +127,7 @@ function Overview() {
               <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--high)] animate-pulse" />
               {isLoading ? "Chargement…" : "Investigation en cours"}
             </div>
-            <h2 className="text-xl font-semibold mt-1">Dossier demo</h2>
+            
             <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
               {correlations?.correlated_events?.length
                 ? `${correlations.correlated_events.length} corrélation(s) host/réseau détectée(s).`
@@ -143,14 +143,7 @@ function Overview() {
                 {correlations?.combined_risk_score ?? "—"}
               </div>
             </div>
-            <a
-              href={`${API_URL}/cases/demo/report`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary text-primary-foreground px-3 py-2 text-sm font-medium hover:opacity-90"
-            >
-              Générer rapport <ArrowUpRight className="h-3.5 w-3.5" />
-            </a>
+            
           </div>
         </div>
       </Card>

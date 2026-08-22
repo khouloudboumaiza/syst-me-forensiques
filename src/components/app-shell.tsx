@@ -11,7 +11,6 @@ import {
   Upload,
   Search,
   Bell,
-  CircleUser,
   Wifi,
   WifiOff,
   Activity,
@@ -20,6 +19,7 @@ import {
 } from "lucide-react";
 import { useBackendStatus, useAnalysisStatus } from "@/hooks/useCaseData";
 import { useFileSelection } from "@/hooks/useFileSelection";
+import { UserMenu } from "@/components/UserMenu";
 
 const nav = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
@@ -176,17 +176,8 @@ export function AppShell({ children, title, subtitle }: { children: ReactNode; t
                 className="bg-transparent text-sm outline-none flex-1 placeholder:text-muted-foreground"
               />
             </div>
-            <button className="relative h-9 w-9 grid place-items-center rounded-md border border-border hover:bg-muted">
-              <Bell className="h-4 w-4" />
-              <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-destructive" />
-            </button>
-            <div className="flex items-center gap-2 pl-3 border-l border-border">
-              <CircleUser className="h-6 w-6 text-muted-foreground" />
-              <div className="text-xs">
-                <div className="font-medium">Analyste</div>
-                <div className="text-muted-foreground">Forensique</div>
-              </div>
-            </div>
+           
+            <UserMenu />
           </div>
         </header>
         <main className="flex-1 p-6 overflow-x-hidden">{children}</main>

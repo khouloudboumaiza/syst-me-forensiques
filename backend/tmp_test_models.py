@@ -1,6 +1,7 @@
 import requests, json
 
-API_KEY = "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"
+import os
+API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 headers = {
     "Authorization": f"Bearer {API_KEY}",
     "Accept": "application/json",

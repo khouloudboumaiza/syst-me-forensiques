@@ -11,7 +11,9 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UploadRouteImport } from './routes/upload'
 import { Route as TimelineRouteImport } from './routes/timeline'
+import { Route as SignupRouteImport } from './routes/signup'
 import { Route as ReportsRouteImport } from './routes/reports'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as IocsRouteImport } from './routes/iocs'
 import { Route as CorrelationsRouteImport } from './routes/correlations'
 import { Route as ArtifactsRouteImport } from './routes/artifacts'
@@ -28,9 +30,19 @@ const TimelineRoute = TimelineRouteImport.update({
   path: '/timeline',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ReportsRoute = ReportsRouteImport.update({
   id: '/reports',
   path: '/reports',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IocsRoute = IocsRouteImport.update({
@@ -65,7 +77,9 @@ export interface FileRoutesByFullPath {
   '/artifacts': typeof ArtifactsRoute
   '/correlations': typeof CorrelationsRoute
   '/iocs': typeof IocsRoute
+  '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
+  '/signup': typeof SignupRoute
   '/timeline': typeof TimelineRoute
   '/upload': typeof UploadRoute
 }
@@ -75,7 +89,9 @@ export interface FileRoutesByTo {
   '/artifacts': typeof ArtifactsRoute
   '/correlations': typeof CorrelationsRoute
   '/iocs': typeof IocsRoute
+  '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
+  '/signup': typeof SignupRoute
   '/timeline': typeof TimelineRoute
   '/upload': typeof UploadRoute
 }
@@ -86,7 +102,9 @@ export interface FileRoutesById {
   '/artifacts': typeof ArtifactsRoute
   '/correlations': typeof CorrelationsRoute
   '/iocs': typeof IocsRoute
+  '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
+  '/signup': typeof SignupRoute
   '/timeline': typeof TimelineRoute
   '/upload': typeof UploadRoute
 }
@@ -98,7 +116,9 @@ export interface FileRouteTypes {
     | '/artifacts'
     | '/correlations'
     | '/iocs'
+    | '/login'
     | '/reports'
+    | '/signup'
     | '/timeline'
     | '/upload'
   fileRoutesByTo: FileRoutesByTo
@@ -108,7 +128,9 @@ export interface FileRouteTypes {
     | '/artifacts'
     | '/correlations'
     | '/iocs'
+    | '/login'
     | '/reports'
+    | '/signup'
     | '/timeline'
     | '/upload'
   id:
@@ -118,7 +140,9 @@ export interface FileRouteTypes {
     | '/artifacts'
     | '/correlations'
     | '/iocs'
+    | '/login'
     | '/reports'
+    | '/signup'
     | '/timeline'
     | '/upload'
   fileRoutesById: FileRoutesById
@@ -129,7 +153,9 @@ export interface RootRouteChildren {
   ArtifactsRoute: typeof ArtifactsRoute
   CorrelationsRoute: typeof CorrelationsRoute
   IocsRoute: typeof IocsRoute
+  LoginRoute: typeof LoginRoute
   ReportsRoute: typeof ReportsRoute
+  SignupRoute: typeof SignupRoute
   TimelineRoute: typeof TimelineRoute
   UploadRoute: typeof UploadRoute
 }
@@ -150,11 +176,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TimelineRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/reports': {
       id: '/reports'
       path: '/reports'
       fullPath: '/reports'
       preLoaderRoute: typeof ReportsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/iocs': {
@@ -201,7 +241,9 @@ const rootRouteChildren: RootRouteChildren = {
   ArtifactsRoute: ArtifactsRoute,
   CorrelationsRoute: CorrelationsRoute,
   IocsRoute: IocsRoute,
+  LoginRoute: LoginRoute,
   ReportsRoute: ReportsRoute,
+  SignupRoute: SignupRoute,
   TimelineRoute: TimelineRoute,
   UploadRoute: UploadRoute,
 }

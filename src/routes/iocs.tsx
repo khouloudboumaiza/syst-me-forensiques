@@ -1,3 +1,4 @@
+import { apiFetch } from "@/lib/api";
 import { createFileRoute } from "@tanstack/react-router";
 import { AppShell, Card, ToolBadge } from "@/components/app-shell";
 import { Copy, Fingerprint, Loader2, AlertTriangle, ShieldCheck, ShieldAlert, ShieldX, HelpCircle, Sparkles } from "lucide-react";
@@ -40,7 +41,7 @@ function VirusTotalCell({ ioc }: { ioc: any }) {
   }
   const { data, isLoading } = useQuery({
     queryKey: ["vt", ioc.type, lookupHash || ioc.value],
-    queryFn: () => fetch(`${API_URL}/vt/hash/${encodeURIComponent(lookupHash || ioc.value)}`).then((r) => r.json()),
+    queryFn: () => apiFetch(`/vt/hash/${encodeURIComponent(lookupHash || ioc.value)}`).then((r) => r.json()),
     enabled: isHash && isHashLike(lookupHash || ioc.value) && !ioc.vtScore,
     staleTime: Infinity,
   });
@@ -66,7 +67,7 @@ function AIClassifyCell({ ioc }: { ioc: any }) {
   const lookupHash = ioc.linkedHash || (ioc.type === "Hash" ? ioc.value : "");
   const { data: vtData } = useQuery({
     queryKey: ["vt", ioc.type, lookupHash || ioc.value],
-    queryFn: () => fetch(`${API_URL}/vt/hash/${encodeURIComponent(lookupHash || ioc.value)}`).then((r) => r.json()),
+    queryFn: () => apiFetch(`/vt/hash/${encodeURIComponent(lookupHash || ioc.value)}`).then((r) => r.json()),
     enabled: isHashLike(lookupHash || ioc.value),
     staleTime: Infinity,
   });
@@ -101,7 +102,7 @@ function AIClassifyCell({ ioc }: { ioc: any }) {
         body.vt_verdict = vtData.verdict || "unknown";
       }
 
-      const res = await fetch(`${API_URL}/classify-ioc`, {
+      const res = await apiFetch(`/classify-ioc`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

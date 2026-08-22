@@ -6,12 +6,15 @@ import {
   useRouter,
   HeadContent,
   Scripts,
+  useNavigate,
+  useLocation,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { FileSelectionProvider } from "../hooks/useFileSelection";
+import { AuthProvider, useAuth } from "../hooks/useAuth";
 
 function NotFoundComponent() {
   return (
@@ -115,15 +118,34 @@ function RootShell({ children }: { children: ReactNode }) {
   );
 }
 
+// Guard: redirige vers /login si non authentifié
+function AuthGuard({ children }: { children: ReactNode }) {
+  const { isAuthenticated } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    const publicRoutes = ["/login", "/signup"];
+    if (!isAuthenticated && !publicRoutes.includes(location.pathname)) {
+      navigate({ to: "/login" });
+    }
+  }, [isAuthenticated, location.pathname, navigate]);
+
+  return <>{children}</>;
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   return (
     <QueryClientProvider client={queryClient}>
-      <FileSelectionProvider>
-        {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-        <Outlet />
-      </FileSelectionProvider>
+      <AuthProvider>
+        <FileSelectionProvider>
+          <AuthGuard>
+            <Outlet />
+          </AuthGuard>
+        </FileSelectionProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

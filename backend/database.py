@@ -3,7 +3,7 @@ Base de données SQLite pour ForensIQ.
 Stocke les fichiers uploadés et les alertes extraites par les parsers
 (Hayabusa, Loki, module ML réseau) + enrichissement threat intel.
 """
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 
@@ -12,6 +12,35 @@ DATABASE_URL = "sqlite:///./forensiq.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+class User(Base):
+    """Utilisateur de la plateforme ForensiQ (analyste / administrateur)."""
+    __tablename__ = "users"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    username        = Column(String, unique=True, index=True, nullable=False)
+    email           = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role            = Column(String, default="analyst")   # "analyst" | "admin"
+    is_active       = Column(Boolean, default=True)
+    failed_attempts = Column(Integer, default=0)
+    locked_until    = Column(DateTime, nullable=True)
+    last_login      = Column(DateTime, nullable=True)
+    created_at      = Column(DateTime, default=datetime.utcnow)
+
+    case_files = relationship("CaseFile", back_populates="owner")
+
+
+class LoginAttempt(Base):
+    """Log de chaque tentative de connexion (succès ou échec)."""
+    __tablename__ = "login_attempts"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    ip_address  = Column(String)
+    username    = Column(String)
+    success     = Column(Boolean, default=False)
+    timestamp   = Column(DateTime, default=datetime.utcnow)
 
 
 class CaseFile(Base):
@@ -25,8 +54,10 @@ class CaseFile(Base):
     status = Column(String)        # "processing", "parsed", "error", "unsupported"
     alert_count = Column(Integer, default=0)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
+    owner_id    = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     alerts = relationship("Alert", back_populates="file", cascade="all, delete-orphan")
+    owner  = relationship("User", back_populates="case_files")
 
 
 class Alert(Base):

@@ -16,7 +16,9 @@ import os
 import re
 import time
 import requests
-VT_API_KEY = "6379530ccb506878d88036bd1b2becd120a6eb43b20807010786fb08b873a5ef"
+from dotenv import load_dotenv
+load_dotenv()
+VT_API_KEY = os.environ.get("VT_API_KEY", "").strip()
 VT_BASE_URL = "https://www.virustotal.com/api/v3"
 
 _cache: dict[str, dict] = {}

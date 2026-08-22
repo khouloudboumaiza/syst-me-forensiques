@@ -1,3 +1,4 @@
+import { apiFetch } from "@/lib/api";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useCallback } from "react";
 import { AppShell, Card, SeverityBadge } from "@/components/app-shell";
@@ -12,7 +13,7 @@ async function fetchAICorrelationExplanation(type: string, indicator: string, ri
   const cacheKey = `correl|${type}|${indicator}|${risk}`;
   if (explanationCache[cacheKey]) return explanationCache[cacheKey];
 
-  const res = await fetch(`${API_URL}/explain-correlation`, {
+  const res = await apiFetch(`/explain-correlation`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ type, indicator, risk, tools, files, alert_count, events }),

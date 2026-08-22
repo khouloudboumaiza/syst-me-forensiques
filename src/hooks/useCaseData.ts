@@ -7,7 +7,7 @@
 // ─ useAnalysisStatus surveille /status (très léger) pendant le traitement.
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { API_URL } from "@/lib/api";
+import { API_URL, apiFetch } from "@/lib/api";
 import { useFileSelection } from "./useFileSelection";
 
 const CASE_ID = "demo";
@@ -160,7 +160,7 @@ export function useStats() {
   const { selectedFileId } = useFileSelection();
   return useQuery({
     queryKey:       ["stats", CASE_ID, selectedFileId],
-    queryFn:        () => fetch(`${API_URL}/cases/${CASE_ID}/stats${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+    queryFn:        () => apiFetch(`/cases/${CASE_ID}/stats${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     staleTime:      STALE_TIME,
     refetchInterval: getRefetchInterval,
   });
@@ -172,7 +172,7 @@ export function useAlerts() {
   return useQuery({
     queryKey:        ["alerts", CASE_ID, selectedFileId],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     staleTime:       STALE_TIME,
     refetchInterval: getRefetchInterval,
   });
@@ -183,7 +183,7 @@ export function useSeverityDistribution() {
   return useQuery({
     queryKey:        ["severity-distribution", CASE_ID, selectedFileId],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/severity-distribution${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/severity-distribution${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     staleTime:       STALE_TIME,
     refetchInterval: getRefetchInterval,
   });
@@ -194,7 +194,7 @@ export function useToolDistribution() {
   return useQuery({
     queryKey:        ["tool-distribution", CASE_ID, selectedFileId],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/tool-distribution${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/tool-distribution${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     staleTime:       STALE_TIME,
     refetchInterval: getRefetchInterval,
   });
@@ -204,7 +204,7 @@ export function useFilesList() {
   return useQuery({
     queryKey:        ["files", CASE_ID],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/files`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/files`).then((r) => r.json()),
     staleTime:       STALE_TIME,
     refetchInterval: getRefetchInterval,
   });
@@ -215,7 +215,7 @@ export function useCorrelations() {
   return useQuery({
     queryKey:        ["correlations", CASE_ID, selectedFileId],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/correlations${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/correlations${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     staleTime:       STALE_TIME,
     refetchInterval: getRefetchInterval,
   });
@@ -226,7 +226,7 @@ export function useReport() {
   return useQuery({
     queryKey:        ["report", CASE_ID, selectedFileId],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/report${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/report${selectedFileId ? `?file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     staleTime:       10_000,
     refetchInterval: IDLE_POLL,
   });
@@ -240,7 +240,7 @@ export function useIOCs() {
   return useQuery({
     queryKey:        ["alerts", CASE_ID, selectedFileId],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     select:          buildIOCsFromAlerts,
     staleTime:       STALE_TIME,
     refetchInterval: getRefetchInterval,
@@ -252,7 +252,7 @@ export function useTimeline() {
   return useQuery({
     queryKey:        ["alerts", CASE_ID, selectedFileId],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     select:          buildTimelineFromAlerts,
     staleTime:       STALE_TIME,
     refetchInterval: getRefetchInterval,
@@ -264,7 +264,7 @@ export function useArtifacts() {
   return useQuery({
     queryKey:        ["alerts", CASE_ID, selectedFileId],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/alerts?limit=500${selectedFileId ? `&file_id=${selectedFileId}` : ""}`).then((r) => r.json()),
     select:          buildArtifactsFromAlerts,
     staleTime:       STALE_TIME,
     refetchInterval: getRefetchInterval,
@@ -278,7 +278,7 @@ export function useBackendStatus() {
   return useQuery({
     queryKey:        ["backend-status"],
     queryFn:         () =>
-      fetch(`${API_URL}/`).then((r) => {
+      apiFetch(`/`).then((r) => {
         if (!r.ok) throw new Error("Backend down");
         return r.json();
       }),
@@ -295,7 +295,7 @@ export function useAnalysisStatus() {
   return useQuery({
     queryKey:        ["status", CASE_ID],
     queryFn:         () =>
-      fetch(`${API_URL}/cases/${CASE_ID}/status`).then((r) => r.json()),
+      apiFetch(`/cases/${CASE_ID}/status`).then((r) => r.json()),
     staleTime:       500,
     refetchInterval: (data: any) => {
       // Si traitement en cours : poll toutes les 1.5 s, sinon 8 s
@@ -320,7 +320,7 @@ export function useUploadFile() {
       if (fileArray.length === 1) {
         // Single file → utilise l'endpoint existant
         formData.append("file", fileArray[0]);
-        const res = await fetch(`${API_URL}/cases/${CASE_ID}/upload`, {
+        const res = await apiFetch(`/cases/${CASE_ID}/upload`, {
           method: "POST",
           body: formData,
         });
@@ -331,7 +331,7 @@ export function useUploadFile() {
         for (const f of fileArray) {
           formData.append("files", f);
         }
-        const res = await fetch(`${API_URL}/cases/${CASE_ID}/upload-multi`, {
+        const res = await apiFetch(`/cases/${CASE_ID}/upload-multi`, {
           method: "POST",
           body: formData,
         });

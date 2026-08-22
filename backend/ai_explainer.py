@@ -7,11 +7,12 @@ Utilise le modèle openai/gpt-oss-20b pour des explications précises.
 import os
 import json
 from typing import Optional
+from dotenv import load_dotenv
+load_dotenv()
 from openai import OpenAI
 
 # ── Configuration NVIDIA API ─────────────────────────────────────────────────
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "").strip()
-NVIDIA_API_KEY = NVIDIA_API_KEY or "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"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 NVIDIA_MODEL = "meta/llama-3.1-8b-instruct"
 

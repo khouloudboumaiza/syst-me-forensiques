@@ -13,11 +13,14 @@ from typing import List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from pydantic import BaseModel as PydanticBase, EmailStr, field_validator
+import re as _re
 
 from parsers.identifier import detect_tool
 from parsers import loki_parser, hayabusa_parser, kuiper_parser, zircolite_parser
@@ -26,7 +29,12 @@ import pandas as pd
 from threat_intel import enrich_alerts
 from report_generator import generate_report
 from ai_explainer import explain_alert
-from database import init_db, get_db, SessionLocal, CaseFile, Alert
+from database import init_db, get_db, SessionLocal, CaseFile, Alert, User, LoginAttempt
+from auth import (
+    get_current_user, require_admin, authenticate_user,
+    create_access_token, create_refresh_token, decode_token,
+    hash_password, ensure_default_admin
+)
 from typing import Optional
 
 app = FastAPI(title="ForensiQ Backend")
@@ -42,6 +50,111 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 init_db()  # crée forensiq.db et les tables au démarrage si elles n'existent pas
+
+# Crée le compte admin par défaut (admin/admin) au premier démarrage
+_startup_db = SessionLocal()
+try:
+    ensure_default_admin(_startup_db)
+finally:
+    _startup_db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0. AUTH ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+class SignupRequest(PydanticBase):
+    username: str
+    email: str
+    password: str
+    role: str = "analyst"
+
+    @field_validator("password")
+    @classmethod
+    def strong_password(cls, v):
+        if len(v) < 8:
+            raise ValueError("Le mot de passe doit contenir au moins 8 caractères.")
+        if not _re.search(r"[A-Z]", v):
+            raise ValueError("Le mot de passe doit contenir au moins une majuscule.")
+        if not _re.search(r"\d", v):
+            raise ValueError("Le mot de passe doit contenir au moins un chiffre.")
+        if not _re.search(r"[^A-Za-z0-9]", v):
+            raise ValueError("Le mot de passe doit contenir au moins un caractère spécial.")
+        return v
+
+
+class LoginRequest(PydanticBase):
+    username: str
+    password: str
+
+
+class RefreshRequest(PydanticBase):
+    refresh_token: str
+
+
+@app.post("/auth/signup", tags=["Auth"])
+def signup(req: SignupRequest, db: Session = Depends(get_db)):
+    """Créer un nouveau compte analyste."""
+    if db.query(User).filter((User.username == req.username) | (User.email == req.email)).first():
+        raise HTTPException(status_code=409, detail="Ce nom d'utilisateur ou email est déjà utilisé.")
+    user = User(
+        username=req.username,
+        email=req.email,
+        hashed_password=hash_password(req.password),
+        role=req.role if req.role in ("analyst", "admin") else "analyst",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"message": "Compte créé avec succès", "username": user.username, "role": user.role}
+
+
+@app.post("/auth/login", tags=["Auth"])
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    """Connexion — retourne access_token + refresh_token."""
+    client_ip = request.client.host if request.client else "unknown"
+    user = authenticate_user(req.username, req.password, client_ip, db)
+    access_token  = create_access_token({"sub": user.username, "role": user.role})
+    refresh_token = create_refresh_token({"sub": user.username})
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "username": user.username,
+        "role": user.role,
+    }
+
+
+@app.post("/auth/refresh", tags=["Auth"])
+def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
+    """Renouveler l'access token via le refresh token."""
+    payload = decode_token(req.refresh_token)
+    if payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Token invalide")
+    username = payload.get("sub")
+    user = db.query(User).filter(User.username == username).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="Compte introuvable")
+    access_token = create_access_token({"sub": user.username, "role": user.role})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get("/auth/me", tags=["Auth"])
+def get_me(current_user: User = Depends(get_current_user)):
+    """Retourne le profil de l'utilisateur connecté."""
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "role": current_user.role,
+        "last_login": current_user.last_login,
+    }
+
+
+@app.get("/auth/users", tags=["Auth"])
+def list_users(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """[Admin] Lister tous les utilisateurs."""
+    users = db.query(User).all()
+    return [{"id": u.id, "username": u.username, "email": u.email, "role": u.role, "is_active": u.is_active} for u in users]
 
 
 @app.get("/")
@@ -162,7 +275,7 @@ def _process_file_background(case_id: str, file_id: int, saved_path: str,
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/cases/{case_id}/upload")
 async def upload_file(case_id: str, file: UploadFile = File(...),
-                      db: Session = Depends(get_db)):
+                      db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     content = await file.read()
 
     saved_path = UPLOAD_DIR / f"{case_id}_{file.filename}"
@@ -263,7 +376,7 @@ async def upload_multiple_files(case_id: str, files: List[UploadFile] = File(...
 # 2. STATUT RAPIDE (polling léger pendant l'analyse)
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/status")
-def get_status(case_id: str, db: Session = Depends(get_db)):
+def get_status(case_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Endpoint ultra-léger : renvoie juste le statut de chaque fichier
     + le nombre d'alertes déjà insérées. Idéal pour le polling.
@@ -388,7 +501,7 @@ class ExplainRequest(BaseModel):
     severity: str = "medium"
 
 @app.post("/explain-alert")
-def explain_alert_endpoint(req: ExplainRequest):
+def explain_alert_endpoint(req: ExplainRequest, current_user: User = Depends(get_current_user)):
     """Appelle l'IA (Gemini) pour expliquer une alerte en langage humain."""
     explanation = explain_alert(
         rule=req.rule,
@@ -409,7 +522,7 @@ class ExplainCorrelationRequest(BaseModel):
     events: list[str] = []
 
 @app.post("/explain-correlation")
-def explain_correlation_endpoint(req: ExplainCorrelationRequest):
+def explain_correlation_endpoint(req: ExplainCorrelationRequest, current_user: User = Depends(get_current_user)):
     """Appelle l'IA pour expliquer une corrélation multi-dimensionnelle."""
     from ai_explainer import explain_correlation
     explanation = explain_correlation(
@@ -439,7 +552,7 @@ class ClassifyIocRequest(BaseModel):
     tool: str = ""
 
 @app.post("/classify-ioc")
-def classify_ioc_endpoint(req: ClassifyIocRequest):
+def classify_ioc_endpoint(req: ClassifyIocRequest, current_user: User = Depends(get_current_user)):
     """Classe un hash IOC à partir du score VirusTotal, avec enrichissement optionnel via Ollama."""
     result = classify_by_vt_score_with_ai(
         hash_value=req.hash_value,
@@ -497,7 +610,7 @@ def _normalize_hour(ts_str: str) -> str:
         return str(ts_str)[:13]
 
 @app.get("/cases/{case_id}/correlations")
-def get_correlations(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_correlations(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Moteur de corrélation multi-dimensionnel.
     Corrèle les alertes entre fichiers uploadés selon 5 axes :
@@ -795,7 +908,7 @@ def get_report(case_id: str, file_id: Optional[int] = None, db: Session = Depend
 # 10. RAPPORT PDF (Global)
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/report/pdf")
-def get_report_pdf(case_id: str, db: Session = Depends(get_db)):
+def get_report_pdf(case_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     files = db.query(CaseFile).filter(CaseFile.case_id == case_id).all()
     files_map = {f.id: f.filename for f in files}
     # N'inclure que les fichiers correctement analysés
@@ -827,7 +940,7 @@ def get_report_pdf(case_id: str, db: Session = Depends(get_db)):
 # 11. RAPPORT PDF (Spécifique à un fichier)
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/files/{file_id}/report/pdf")
-def get_file_report_pdf(case_id: str, file_id: int, db: Session = Depends(get_db)):
+def get_file_report_pdf(case_id: str, file_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     file_obj = db.query(CaseFile).filter(CaseFile.id == file_id, CaseFile.case_id == case_id).first()
     if not file_obj:
         raise HTTPException(status_code=404, detail="Fichier introuvable")
