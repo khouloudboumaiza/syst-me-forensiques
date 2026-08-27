@@ -1,6 +1,8 @@
 import requests
+import os
+from dotenv import load_dotenv
+load_dotenv()
 headers = {
-    import os
     "Authorization": f"Bearer {os.environ.get('NVIDIA_API_KEY', '')}",
     "Accept": "application/json",
 }

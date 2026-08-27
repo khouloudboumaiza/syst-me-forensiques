@@ -14,7 +14,7 @@ from openai import OpenAI
 # ── Configuration NVIDIA API ─────────────────────────────────────────────────
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "").strip()
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_MODEL = "meta/llama-3.1-8b-instruct"
+NVIDIA_MODEL = "meta/llama-3.2-11b-vision-instruct"
 
 _NVIDIA_RESPONSE_CACHE: dict[tuple[str, float, int], str] = {}
 _CACHE_LIMIT = 200

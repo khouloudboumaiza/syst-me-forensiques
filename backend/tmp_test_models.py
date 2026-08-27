@@ -1,6 +1,7 @@
 import requests, json
-
 import os
+from dotenv import load_dotenv
+load_dotenv()
 API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 headers = {
     "Authorization": f"Bearer {API_KEY}",
@@ -10,11 +11,10 @@ headers = {
 
 # Test multiple models to find the fastest working one
 models_to_test = [
-    "qwen/qwen3.5-397b-a17b",
-    "qwen/qwen3.5-122b-a10b",
-    "qwen/qwen3-next-80b-a3b-instruct",
-    "deepseek-ai/deepseek-v4-flash",
-    "meta/llama-3.3-70b-instruct",
+    "nvidia/llama-3.1-nemotron-51b-instruct",
+    "meta/llama-3.2-11b-vision-instruct",
+    "mistralai/mistral-7b-instruct-v0.3",
+    "deepseek-ai/deepseek-v4-flash-0731",
 ]
 
 for model in models_to_test:
