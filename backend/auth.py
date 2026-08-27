@@ -17,7 +17,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from database import get_db, User, LoginAttempt
+from database import get_db, User, LoginAttempt, CaseFile
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "forensiq-secret-key-change-in-production-2024")
@@ -165,7 +165,12 @@ def _log_attempt(db: Session, ip: str, username: str, success: bool):
 
 # ─── Création du compte admin par défaut ─────────────────────────────────────
 def ensure_default_admin(db: Session):
-    """Crée le compte admin/admin s'il n'existe pas encore."""
+    """Crée le compte admin/admin s'il n'existe pas encore et migre les anciens fichiers."""
+    # Sécurité Production : Désactiver le seed automatique d'admin/admin en prod
+    if os.environ.get("ENV") == "production" and os.environ.get("SEED_DEFAULT_ADMIN", "false").lower() != "true":
+        security_logger.info("[INIT] Mode Production détecté : omission du seed automatique d'admin")
+        return
+
     existing = db.query(User).filter(User.username == "admin").first()
     if not existing:
         admin = User(
@@ -177,4 +182,16 @@ def ensure_default_admin(db: Session):
         )
         db.add(admin)
         db.commit()
+        db.refresh(admin)
+        admin_id = admin.id
         security_logger.info("[INIT] Compte admin par défaut créé (admin/admin)")
+    else:
+        admin_id = existing.id
+
+    # Migrer les fichiers qui n'ont pas d'owner (legacy) vers l'admin par défaut
+    try:
+        db.query(CaseFile).filter(CaseFile.owner_id == None).update({CaseFile.owner_id: admin_id})
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        security_logger.error(f"[MIGRATION ERROR] Impossible de migrer les anciens fichiers : {e}")

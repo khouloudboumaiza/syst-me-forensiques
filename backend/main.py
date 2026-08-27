@@ -290,12 +290,13 @@ async def upload_file(case_id: str, file: UploadFile = File(...),
     except Exception:
         tool = detect_tool(file.filename, content)
 
-    # Enregistrement immédiat en base avec status="processing"
+    # Enregistrement immédiat en base avec status="processing" et assignation du propriétaire
     case_file = CaseFile(
         case_id=case_id,
         filename=file.filename,
         tool=tool,
         status="processing",
+        owner_id=current_user.id,
     )
     db.add(case_file)
     db.commit()
@@ -325,7 +326,7 @@ async def upload_file(case_id: str, file: UploadFile = File(...),
 # ─────────────────────────────────────────────────────────────────────────────
 @app.post("/cases/{case_id}/upload-multi")
 async def upload_multiple_files(case_id: str, files: List[UploadFile] = File(...),
-                                db: Session = Depends(get_db)):
+                                db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     results = []
     for uploaded_file in files:
         content = await uploaded_file.read()
@@ -345,6 +346,7 @@ async def upload_multiple_files(case_id: str, files: List[UploadFile] = File(...
             filename=uploaded_file.filename,
             tool=tool,
             status="processing",
+            owner_id=current_user.id,
         )
         db.add(case_file)
         db.commit()
@@ -381,8 +383,8 @@ def get_status(case_id: str, db: Session = Depends(get_db), current_user: User =
     Endpoint ultra-léger : renvoie juste le statut de chaque fichier
     + le nombre d'alertes déjà insérées. Idéal pour le polling.
     """
-    files = db.query(CaseFile).filter(CaseFile.case_id == case_id).all()
-    alerts_count = db.query(func.count(Alert.id)).filter(Alert.case_id == case_id).scalar()
+    files = db.query(CaseFile).filter(CaseFile.case_id == case_id, CaseFile.owner_id == current_user.id).all()
+    alerts_count = db.query(func.count(Alert.id)).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id).scalar()
     processing = any(f.status == "processing" for f in files)
     return {
         "processing": processing,
@@ -425,8 +427,8 @@ def alert_to_dict(a: Alert, upload_filename: str = None) -> dict:
 # 3. LISTE DES FICHIERS
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/files")
-def list_files(case_id: str, db: Session = Depends(get_db)):
-    files = db.query(CaseFile).filter(CaseFile.case_id == case_id).all()
+def list_files(case_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    files = db.query(CaseFile).filter(CaseFile.case_id == case_id, CaseFile.owner_id == current_user.id).all()
     return [
         {
             "id":          f.id,
@@ -444,9 +446,9 @@ def list_files(case_id: str, db: Session = Depends(get_db)):
 # 4. STATS
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/stats")
-def get_stats(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db)):
-    file_query = db.query(CaseFile).filter(CaseFile.case_id == case_id)
-    alert_query = db.query(Alert).filter(Alert.case_id == case_id)
+def get_stats(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    file_query = db.query(CaseFile).filter(CaseFile.case_id == case_id, CaseFile.owner_id == current_user.id)
+    alert_query = db.query(Alert).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id)
     
     if file_id:
         file_query = file_query.filter(CaseFile.id == file_id)
@@ -479,8 +481,9 @@ def get_alerts(
     limit:  int = Query(default=300, le=2000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Alert).filter(Alert.case_id == case_id)
+    query = db.query(Alert).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id)
     if file_id:
         query = query.filter(Alert.file_id == file_id)
         
@@ -569,8 +572,8 @@ def classify_ioc_endpoint(req: ClassifyIocRequest, current_user: User = Depends(
 # 6. DISTRIBUTION DE SÉVÉRITÉ
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/severity-distribution")
-def get_severity_distribution(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db)):
-    query = db.query(Alert.severity, func.count(Alert.id)).filter(Alert.case_id == case_id)
+def get_severity_distribution(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = db.query(Alert.severity, func.count(Alert.id)).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id)
     if file_id:
         query = query.filter(Alert.file_id == file_id)
     rows = query.group_by(Alert.severity).all()
@@ -587,8 +590,8 @@ def get_severity_distribution(case_id: str, file_id: Optional[int] = None, db: S
 # 7. DISTRIBUTION PAR OUTIL
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/tool-distribution")
-def get_tool_distribution(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db)):
-    query = db.query(Alert.tool, func.count(Alert.id)).filter(Alert.case_id == case_id)
+def get_tool_distribution(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = db.query(Alert.tool, func.count(Alert.id)).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id)
     if file_id:
         query = query.filter(Alert.file_id == file_id)
     rows = query.group_by(Alert.tool).all()
@@ -633,7 +636,7 @@ def get_correlations(case_id: str, file_id: Optional[int] = None, db: Session = 
         return False  # keep all IPs for correlation
 
     # ── Récupérer les alertes ──────────────────────────────────────────────
-    q = db.query(Alert).filter(Alert.case_id == case_id)
+    q = db.query(Alert).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id)
     all_alerts = q.order_by(Alert.id.desc()).limit(50000).all()
 
     def _extract_indicators(alert_obj):
@@ -888,8 +891,8 @@ def get_correlations(case_id: str, file_id: Optional[int] = None, db: Session = 
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/report")
 def get_report(case_id: str, file_id: Optional[int] = None, db: Session = Depends(get_db)):
-    q_alerts = db.query(Alert).filter(Alert.case_id == case_id)
-    q_files = db.query(CaseFile).filter(CaseFile.case_id == case_id)
+    q_alerts = db.query(Alert).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id)
+    q_files = db.query(CaseFile).filter(CaseFile.case_id == case_id, CaseFile.owner_id == current_user.id)
     
     if file_id:
         q_alerts = q_alerts.filter(Alert.file_id == file_id)
@@ -909,7 +912,7 @@ def get_report(case_id: str, file_id: Optional[int] = None, db: Session = Depend
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/report/pdf")
 def get_report_pdf(case_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    files = db.query(CaseFile).filter(CaseFile.case_id == case_id).all()
+    files = db.query(CaseFile).filter(CaseFile.case_id == case_id, CaseFile.owner_id == current_user.id).all()
     files_map = {f.id: f.filename for f in files}
     # N'inclure que les fichiers correctement analysés
     files_meta = [
@@ -921,7 +924,7 @@ def get_report_pdf(case_id: str, db: Session = Depends(get_db), current_user: Us
         files_meta = [{"id": f.id, "filename": f.filename, "tool": f.tool} for f in files]
     alerts = [
         alert_to_dict(a, upload_filename=files_map.get(a.file_id))
-        for a in db.query(Alert).filter(Alert.case_id == case_id).limit(1000).all()
+        for a in db.query(Alert).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id).limit(1000).all()
     ]
     stats = get_stats(case_id, db)
 
@@ -941,20 +944,20 @@ def get_report_pdf(case_id: str, db: Session = Depends(get_db), current_user: Us
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/cases/{case_id}/files/{file_id}/report/pdf")
 def get_file_report_pdf(case_id: str, file_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    file_obj = db.query(CaseFile).filter(CaseFile.id == file_id, CaseFile.case_id == case_id).first()
+    file_obj = db.query(CaseFile).filter(CaseFile.id == file_id, CaseFile.case_id == case_id, CaseFile.owner_id == current_user.id).first()
     if not file_obj:
         raise HTTPException(status_code=404, detail="Fichier introuvable")
 
     # On récupère en priorité TOUTES les alertes de CE fichier
     file_alerts_query = db.query(Alert).filter(Alert.case_id == case_id, Alert.file_id == file_id).all()
     # On prend un gros échantillon des dernières alertes pour corréler les fichiers récemment uploadés
-    q = db.query(Alert).filter(Alert.case_id == case_id).order_by(Alert.id.desc()).limit(50000)
+    q = db.query(Alert).join(CaseFile).filter(Alert.case_id == case_id, CaseFile.owner_id == current_user.id).order_by(Alert.id.desc()).limit(50000)
     alerts = q.all()
     
     alerts_query = file_alerts_query + alerts
 
     # files_map pour résoudre les noms de fichiers
-    files = db.query(CaseFile).filter(CaseFile.case_id == case_id).all()
+    files = db.query(CaseFile).filter(CaseFile.case_id == case_id, CaseFile.owner_id == current_user.id).all()
     files_map = {f.id: f.filename for f in files}
     alerts = [alert_to_dict(a, upload_filename=files_map.get(a.file_id)) for a in alerts_query]
     
