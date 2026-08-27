@@ -3,6 +3,7 @@ import { AppShell } from "@/components/app-shell";
 import { useStats, useCorrelations, useAlerts, useIOCs, useFilesList, useReport, useAnalysisStatus } from "@/hooks/useCaseData";
 import { useFileSelection } from "@/hooks/useFileSelection";
 import { API_URL } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 import {
   FileText, Download, Printer, Shield, AlertTriangle,
   Clock, CheckCircle2, XCircle, ChevronRight, Globe,
@@ -112,6 +113,7 @@ function SevBadge({ severity }: { severity: string }) {
 
 // ─── Page principale ───────────────────────────────────────────────────────────
 function ReportsPage() {
+  const { token } = useAuth();
   const { data: stats }        = useStats();
   const { data: correlationsData } = useCorrelations();
   const { data: rawAlerts }    = useAlerts();
@@ -159,7 +161,7 @@ function ReportsPage() {
         <div className="flex items-center gap-2">
          
           <a
-            href={`${API_URL}/cases/demo/report/pdf`}
+            href={`${API_URL}/cases/demo/report/pdf${token ? `?token=${encodeURIComponent(token)}` : ""}`}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-90 transition-opacity"
@@ -368,7 +370,7 @@ function ReportsPage() {
                           </button>
                         )}
                         <a
-                          href={`${API_URL}/cases/demo/files/${f.id}/report/pdf`}
+                          href={`${API_URL}/cases/demo/files/${f.id}/report/pdf${token ? `?token=${encodeURIComponent(token)}` : ""}`}
                           target="_blank"
                           rel="noreferrer"
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary text-xs font-medium rounded transition-colors"

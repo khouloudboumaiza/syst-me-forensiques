@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -35,7 +35,31 @@ logging.basicConfig(level=logging.INFO)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ─── OAuth2 Bearer ───────────────────────────────────────────────────────────
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+
+async def get_token_from_header_or_query(request: Request) -> str:
+    # 1. Tenter d'extraire depuis l'en-tête Authorization
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        return auth_header.split(" ", 1)[1]
+
+    # 2. Tenter d'extraire depuis les paramètres de requête (?token=...)
+    token_param = request.query_params.get("token")
+    if token_param:
+        return token_param
+
+    # 3. Fallback sur le comportement par défaut d'OAuth2PasswordBearer
+    # Si auto_error=False, oauth2_scheme renvoie None au lieu de lever une exception
+    # Nous levons alors manuellement l'exception 401 standard.
+    token = await oauth2_scheme(request)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
 
 
 def hash_password(plain: str) -> str:
@@ -73,7 +97,7 @@ def decode_token(token: str) -> dict:
 
 
 # ─── Dépendances FastAPI ──────────────────────────────────────────────────────
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def get_current_user(token: str = Depends(get_token_from_header_or_query), db: Session = Depends(get_db)) -> User:
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Token invalide")
